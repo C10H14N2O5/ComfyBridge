@@ -1,0 +1,17 @@
+{
+  "upstream": "https://github.com/BtbN/FFmpeg-Builds",
+  "release": "autobuild-2026-10-22-13-06",
+  "archive": "ffmpeg-n8.1.3-23-g5c4f5744cd-win64-lgpl-shared-8.1.zip",
+  "archive_sha256": "c41df73a3f3259e81d5d53e6ce0c4c80b4841a30894fb77954650e445daa6c53",
+  "download_url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-22-13-06/ffmpeg-n8.1.3-23-g5c4f5744cd-win64-lgpl-shared-8.1.zip",
+  "ffmpeg_commit": "5c4f5744cd60943125a78db692b728210102f255",
+  "ffmpeg_source_url": "https://github.com/FFmpeg/FFmpeg/tree/5c4f5744cd60943125a78db692b728210102f255",
+  "builder_commit": "937868360a21d711ec94a33f5591d345ad9b7754",
+  "builder_source_url": "https://github.com/BtbN/FFmpeg-Builds/tree/937868360a21d711ec94a33f5591d345ad9b7754",
+  "license": "LGPL-3.0-or-later; bundled upstream LICENSE.txt; enabled third-party libraries have their own terms",
+  "source_archives": [
+    "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/5c4f5744cd60943125a78db692b728210102f255",
+    "https://codeload.github.com/BtbN/FFmpeg-Builds/tar.gz/937868360a21d711ec94a33f5591d345ad9b7754"
+  ],
+  "distribution_notes": "Use ffmpeg.exe, ffprobe.exe and all shared DLLs from this unchanged package. Preserve LGPL and GPL-v3 texts and provenance. Build recipes identify third-party dependencies; do not claim this manifest alone is a complete legal review or all dependency source code."
+}
