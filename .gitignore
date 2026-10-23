@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+data/
+artifacts/
+build/
+dist/
+*.egg-info/
+
+# Local credentials, user configuration and transient runtime state
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.log
+*.sqlite3*
+config.json
+config.json.bak
+ui.json
+runtime/
+temp/
+data-*/

@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "server": {
+    "listen_host": "127.0.0.1",
+    "listen_port": 18388,
+    "api_key": ""
+  },
+  "comfyui": {
+    "base_url": "http://127.0.0.1:8188"
+  },
+  "limits": {
+    "max_input_chars": 4096,
+    "max_body_bytes": 65536,
+    "max_inflight": 1,
+    "max_queue": 8,
+    "request_timeout": 300.0,
+    "connect_timeout": 3.0,
+    "query_timeout": 3.0,
+    "submit_timeout": 15.0,
+    "download_timeout": 60.0,
+    "transcode_timeout": 60.0,
+    "poll_interval": 1.0,
+    "probe_interval": 5.0,
+    "max_audio_bytes": 134217728,
+    "max_audio_seconds": 600.0
+  },
+  "logging": {
+    "max_bytes": 10485760,
+    "backup_count": 5
+  },
+  "models": [
+    {"id": "index-tts-2.5", "cache_policy": "inherit"}
+  ],
+  "presets": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "model": "index-tts-2.5",
+      "voice": "example",
+      "template": "workflows/index-tts-2.5_example.json",
+      "sha256": "199359df0cac2975bc679a6768a2fd56683b608461e1f98893f5084d591147c7",
+      "text_binding": {"node_id": "2", "field": "text"},
+      "audio_output_node": "4",
+      "cache_binding": {"node_id": "3", "field": "keep_models_cached"}
+    }
+  ]
+}
