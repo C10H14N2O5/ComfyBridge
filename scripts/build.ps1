@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$SkipTests, [string]$ReleaseName = ('ComfyBridge-0.2.0-windows-x64-' + (Get-Date -Format 'yyyyMMdd-HHmmss')))
+param([switch]$SkipTests, [string]$ReleaseName = ('ComfyBridge-0.3.0-windows-x64-' + (Get-Date -Format 'yyyyMMdd-HHmmss')))
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -35,7 +35,7 @@ Get-ChildItem -LiteralPath (Join-Path $root 'artifacts\vendor\sources') -Filter 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'ffmpeg-manifest.json') -Destination $licenses
 & $python (Join-Path $PSScriptRoot 'collect_licenses.py') (Join-Path $licenses 'python')
 if ($LASTEXITCODE -ne 0) { throw 'License collection failed.' }
-foreach ($name in 'README.md','ARCHITECTURE.md','todo.md','pyproject.toml','uv.lock','.python-version','.gitignore') {
+foreach ($name in 'README.md','ARCHITECTURE.md','CHANGELOG.md','todo.md','pyproject.toml','uv.lock','.python-version','.gitignore') {
     Copy-Item -LiteralPath (Join-Path $root $name) -Destination $destination
 }
 Copy-Item -LiteralPath (Join-Path $root 'examples'),(Join-Path $root 'docs') -Destination $destination -Recurse
@@ -49,7 +49,7 @@ foreach ($sourceName in 'src','tests','scripts') {
     }
 }
 $buildInfo = @{
-    product='ComfyBridge'; version='0.2.0'; built_at=(Get-Date -Format 'o');
+    product='ComfyBridge'; version='0.3.0'; built_at=(Get-Date -Format 'o');
     uv_lock_sha256=(Get-FileHash -LiteralPath (Join-Path $root 'uv.lock') -Algorithm SHA256).Hash.ToLowerInvariant();
     ffmpeg_archive_sha256='c41df73a3f3259e81d5d53e6ce0c4c80b4841a30894fb77954650e445daa6c53';
     notes='Unsigned local MVP build. No production API key, user data, reference audio or model weights included.'

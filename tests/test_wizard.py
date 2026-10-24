@@ -519,3 +519,185 @@ def test_repair_editor_does_not_echo_unknown_ascii_extra_key(tmp_path, language,
     assert 'synthetic-private-value' not in displayed
     assert 'never-print-this-key' not in displayed
     assert (tmp_path / 'config.json').read_bytes() == original
+
+
+def test_put_model_idle_settings_round_trip_rename_and_switch_away():
+    data = draft()
+    idle = {'seconds': 901, 'method': 'workflow', 'text': 'private-cleanup-text'}
+    put_model(data, 'm', 'idle_release', idle_release=idle)
+    idle['seconds'] = 1
+    assert data['models'][0]['idle_release']['seconds'] == 901
+    put_model(data, 'renamed', 'idle_release', replace='m')
+    assert data['models'][0]['idle_release'] == {'seconds': 901, 'method': 'workflow', 'text': 'private-cleanup-text'}
+    previous = copy.deepcopy(data)
+    with pytest.raises(ValueError):
+        put_model(data, 'renamed', 'idle_release', replace='renamed', idle_release={'seconds': 0, 'method': 'free'})
+    assert data == previous
+    put_model(data, 'renamed', 'inherit', replace='renamed')
+    assert 'idle_release' not in data['models'][0]
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+@pytest.mark.parametrize('method,number', [('free', '1'), ('workflow', '2')])
+def test_fourth_strategy_full_bilingual_save_without_remote_calls(tmp_path, language, method, number, no_actions, monkeypatch):
+    import httpx
+    def no_http(*args, **kwargs):
+        pytest.fail('configuration must not contact ComfyUI')
+    monkeypatch.setattr(httpx.Client, 'request', no_http)
+    monkeypatch.setattr(httpx.AsyncClient, 'request', no_http)
+    save_config(tmp_path, AppConfig.model_validate(draft()))
+    answers = ['2', 'm', '4', '', number, '1']
+    if method == 'workflow':
+        answers.append('private-cleanup-text')
+    answers.extend(['s', '1'])
+    io = ScriptedIO(answers)
+    ui = UIContext(language)
+    assert run_wizard(tmp_path, ui=ui, section='models', **io.options()) == 0
+    model = load_config(tmp_path).models[0]
+    assert model.cache_policy == 'idle_release'
+    assert model.idle_release.seconds == 300 and model.idle_release.method == method
+    assert model.idle_release.text == ('private-cleanup-text' if method == 'workflow' else '好。')
+    assert '[4] ' + ui.t(MESSAGES, 'idle_release') in io.messages
+    for index, key in enumerate(('inherit', 'keep', 'release'), 1):
+        assert f'[{index}] ' + ui.t(MESSAGES, key) in io.messages
+    assert ui.t(MESSAGES, 'idle_' + method + '_warning') in io.messages
+    rendered = '\n'.join(io.messages)
+    assert 'private-cleanup-text' not in rendered
+    assert 'never-print-this-key' not in rendered
+    if method == 'free':
+        assert ('其他工作流' if language == 'zh-CN' else 'other workflows') in rendered
+        assert ('无法锁定其他客户端' if language == 'zh-CN' else 'cannot lock other clients') in rendered
+        assert ('队列为空' if language == 'zh-CN' else 'queue is empty') in rendered
+    else:
+        assert ('真实 GPU' if language == 'zh-CN' else 'real GPU') in rendered
+        assert ('音频产物' if language == 'zh-CN' else 'audio artifacts') in rendered
+        assert ('最后一次提交' if language == 'zh-CN' else 'last submitted') in rendered
+        assert ('共享可释放的缓存' if language == 'zh-CN' else 'share a releasable cache') in rendered
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+@pytest.mark.parametrize('method', ['1', '2'])
+@pytest.mark.parametrize('answer', ['', '0', 'n'])
+def test_idle_warning_default_cancel_leaves_existing_model_untouched(tmp_path, language, method, answer):
+    data = draft()
+    put_model(data, 'original', 'keep')
+    original = copy.deepcopy(data)
+    io = ScriptedIO(['1', 'renamed', '4', '300', method, answer])
+    Wizard(tmp_path, ui=UIContext(language), **io.options()).model(data, edit=True)
+    assert data == original
+
+
+@pytest.mark.parametrize('bad_seconds', ['0', '86401', '-1', '1.2', 'true', 'not-a-number'])
+def test_idle_seconds_invalid_values_retry_locally(tmp_path, bad_seconds):
+    data = draft()
+    io = ScriptedIO(['m', '4', bad_seconds, '86400', '1', '1'])
+    Wizard(tmp_path, **io.options()).model(data)
+    assert data['models'][0]['idle_release']['seconds'] == 86400
+    assert sum('Idle timeout' in prompt for prompt in io.prompts) == 2
+
+
+@pytest.mark.parametrize('method,number', [('free', '1'), ('workflow', '2')])
+def test_editing_unchanged_idle_policy_preserves_custom_settings(tmp_path, method, number):
+    data = draft()
+    put_model(data, 'm', 'idle_release', idle_release={'method': method, 'seconds': 1234, 'text': 'preserve-this-text'})
+    answers = ['1', '', '4', '', number, '1'] + ([''] if method == 'workflow' else [])
+    io = ScriptedIO(answers)
+    Wizard(tmp_path, **io.options()).model(data, edit=True)
+    assert data['models'][0]['idle_release'] == {'method': method, 'seconds': 1234, 'text': 'preserve-this-text'}
+
+
+@pytest.mark.parametrize('policy,number', [('inherit', '1'), ('keep', '2'), ('release', '3')])
+def test_menu_switching_away_removes_idle_settings(tmp_path, policy, number):
+    data = draft()
+    put_model(data, 'm', 'idle_release', idle_release={'method': 'free'})
+    io = ScriptedIO(['1', '', number])
+    Wizard(tmp_path, **io.options()).model(data, edit=True)
+    assert data['models'][0] == {'id': 'm', 'cache_policy': policy}
+
+
+def test_method_selection_is_explicit_and_workflow_text_retries(tmp_path):
+    data = draft()
+    io = ScriptedIO(['m', '4', '1', '', '3', '2', '1', 'x' * 65, 'new short text'])
+    Wizard(tmp_path, **io.options()).model(data)
+    idle = data['models'][0]['idle_release']
+    assert idle == {'seconds': 1, 'method': 'workflow', 'text': 'new short text'}
+    assert sum('no automatic default' in prompt for prompt in io.prompts) == 4  # cache once, method three times
+
+
+def test_idle_free_preset_can_omit_cache_binding(tmp_path):
+    data = draft()
+    put_model(data, 'm', 'idle_release', idle_release={'method': 'free'})
+    preset = put_preset(tmp_path, data, graph(), model='m', voice='v',
+                        text_binding={'node_id': '2', 'field': 'text'}, audio_output_node='3')
+    assert preset['cache_binding'] is None
+    validate_draft(tmp_path, data)
+    for language in ('zh-CN', 'en-US'):
+        assert '/free' in UIContext(language).t(MESSAGES, 'no_cache')
+
+
+def test_idle_workflow_preset_requires_cache_binding(tmp_path):
+    data = draft()
+    put_model(data, 'm', 'idle_release', idle_release={'method': 'workflow'})
+    with pytest.raises(ValueError):
+        put_preset(tmp_path, data, graph(), model='m', voice='v',
+                   text_binding={'node_id': '2', 'field': 'text'}, audio_output_node='3')
+    put_preset(tmp_path, data, graph(), model='m', voice='v', text_binding={'node_id': '2', 'field': 'text'},
+               audio_output_node='3', cache_binding={'node_id': '1', 'field': 'keep_models_cached'})
+    validate_draft(tmp_path, data)
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+def test_idle_diagnostic_fields_are_known_but_unknown_codes_and_text_are_not(language):
+    from pydantic import ValidationError
+    from comfybridge.workflows import WorkflowError
+    from comfybridge.config import ConfigError
+    ui = UIContext(language)
+    for field in ('seconds', 'method', 'text'):
+        error = ValidationError.from_exception_data('Synthetic', [
+            {'type': 'string_type', 'loc': ('models', 0, 'idle_release', field), 'input': 'SECRET-CLEANUP-TEXT'}])
+        result = diagnostic(error, ui)
+        assert f'models.0.idle_release.{field}' in result
+        assert 'SECRET-CLEANUP-TEXT' not in result
+    for error in (WorkflowError('synthetic_private_token'), ConfigError('synthetic_private_token')):
+        assert 'synthetic_private_token' not in diagnostic(error, ui)
+    for code in ('cache_cleanup_unsupported', 'cache_cleanup_seed_binding', 'cache_cleanup_seed_schema', 'cache_cleanup_seed_range'):
+        assert diagnostic(WorkflowError(code), ui) == ui.t(MESSAGES, code)
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+def test_idle_summary_hides_cleanup_text_and_malformed_seconds(tmp_path, language):
+    data = draft()
+    put_model(data, 'm', 'idle_release', idle_release={'method': 'workflow', 'seconds': 444, 'text': 'PRIVATE-TEXT'})
+    io = ScriptedIO([])
+    wizard = Wizard(tmp_path, ui=UIContext(language), **io.options())
+    wizard.show_summary(data, 'models')
+    assert '444' in '\n'.join(io.messages)
+    assert 'PRIVATE-TEXT' not in '\n'.join(io.messages)
+    io.messages.clear()
+    data['models'][0]['idle_release']['seconds'] = 'PRIVATE-SECONDS'
+    data['models'][0]['idle_release']['method'] = 'PRIVATE-METHOD'
+    wizard.show_summary(data, 'models')
+    assert 'PRIVATE' not in '\n'.join(io.messages)
+
+
+def test_invalid_new_model_does_not_even_add_empty_models_collection():
+    data = {}
+    with pytest.raises(ValueError):
+        put_model(data, 'invalid/model')
+    assert data == {}
+    with pytest.raises(ValueError):
+        put_model(data, 'm', 'idle_release', idle_release={'method': 'free', 'seconds': 0})
+    assert data == {}
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+def test_unknown_pydantic_error_type_is_not_echoed(language):
+    from pydantic import ValidationError
+    from pydantic_core import PydanticCustomError
+    error = ValidationError.from_exception_data('Synthetic', [{
+        'type': PydanticCustomError('synthetic_private_type', 'private-message'),
+        'loc': ('models', 0, 'idle_release', 'text'), 'input': 'private-cleanup-text'}])
+    result = diagnostic(error, UIContext(language))
+    assert 'synthetic_private_type' not in result
+    assert 'private-message' not in result and 'private-cleanup-text' not in result
+    assert 'models.0.idle_release.text: invalid_value' in result

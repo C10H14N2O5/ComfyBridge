@@ -1,0 +1,192 @@
+{
+  "version": "0.3.0",
+  "completed": true,
+  "stage": "completed",
+  "submissions": [
+    {
+      "prompt_id": "f65605d7-95bb-4ed2-958d-ceda1e5e32c4",
+      "keep_cached": true,
+      "seed": 484884501,
+      "submitted_at": 1792837968.0163968
+    },
+    {
+      "prompt_id": "eecad5d2-951d-4415-8269-1bdef87fd03d",
+      "keep_cached": true,
+      "seed": 484884501,
+      "submitted_at": 1792838248.088593
+    },
+    {
+      "prompt_id": "5f308f1f-0506-45c3-800d-59c1617c2212",
+      "keep_cached": true,
+      "seed": 484884501,
+      "submitted_at": 1792838259.4779067
+    },
+    {
+      "prompt_id": "620856e5-cf47-4f0f-b08f-81e3f183e539",
+      "keep_cached": false,
+      "seed": 1,
+      "submitted_at": 1792838276.7504673
+    },
+    {
+      "prompt_id": "7bf98c4c-6d68-4859-a9b7-d443f7f3f176",
+      "keep_cached": true,
+      "seed": 484884501,
+      "submitted_at": 1792838282.3154676
+    },
+    {
+      "prompt_id": "c78e93e7-8d8d-4d0f-a880-114852243e85",
+      "keep_cached": false,
+      "seed": 2,
+      "submitted_at": 1792838317.4449792
+    }
+  ],
+  "free_calls": [
+    {
+      "requested_at": 1792838245.4419343,
+      "acknowledged": true
+    }
+  ],
+  "samples": [
+    {
+      "label": "free_baseline",
+      "sampled_at": 1792837967.4486377,
+      "devices": [
+        {
+          "name": "cuda:0 NVIDIA RTX A3000 Laptop GPU : cudaMallocAsync",
+          "vram_total": 12884377600,
+          "vram_free": 11686080192,
+          "torch_vram_total": 167772160,
+          "torch_vram_free": 158035648
+        }
+      ]
+    },
+    {
+      "label": "free_recovered_before_release",
+      "sampled_at": 1792838235.2949631,
+      "devices": [
+        {
+          "name": "cuda:0 NVIDIA RTX A3000 Laptop GPU : cudaMallocAsync",
+          "vram_total": 12884377600,
+          "vram_free": 6305374584,
+          "torch_vram_total": 5603590144,
+          "torch_vram_free": 213148024
+        }
+      ]
+    },
+    {
+      "label": "free_after_acknowledgment",
+      "sampled_at": 1792838247.4914904,
+      "devices": [
+        {
+          "name": "cuda:0 NVIDIA RTX A3000 Laptop GPU : cudaMallocAsync",
+          "vram_total": 12884377600,
+          "vram_free": 6305374584,
+          "torch_vram_total": 5603590144,
+          "torch_vram_free": 213148024
+        }
+      ]
+    },
+    {
+      "label": "workflow_baseline",
+      "sampled_at": 1792838247.5741827,
+      "devices": [
+        {
+          "name": "cuda:0 NVIDIA RTX A3000 Laptop GPU : cudaMallocAsync",
+          "vram_total": 12884377600,
+          "vram_free": 6305374584,
+          "torch_vram_total": 5603590144,
+          "torch_vram_free": 213148024
+        }
+      ]
+    },
+    {
+      "label": "workflow_after_first_keep",
+      "sampled_at": 1792838257.2642725,
+      "devices": [
+        {
+          "name": "cuda:0 NVIDIA RTX A3000 Laptop GPU : cudaMallocAsync",
+          "vram_total": 12884377600,
+          "vram_free": 6305374584,
+          "torch_vram_total": 5603590144,
+          "torch_vram_free": 213148024
+        }
+      ]
+    },
+    {
+      "label": "workflow_after_first_cleanup",
+      "sampled_at": 1792838282.3104897,
+      "devices": [
+        {
+          "name": "cuda:0 NVIDIA RTX A3000 Laptop GPU : cudaMallocAsync",
+          "vram_total": 12884377600,
+          "vram_free": 11686080192,
+          "torch_vram_total": 167772160,
+          "torch_vram_free": 158035648
+        }
+      ]
+    },
+    {
+      "label": "workflow_after_reload_keep",
+      "sampled_at": 1792838307.4040375,
+      "devices": [
+        {
+          "name": "cuda:0 NVIDIA RTX A3000 Laptop GPU : cudaMallocAsync",
+          "vram_total": 12884377600,
+          "vram_free": 6305379704,
+          "torch_vram_total": 5570035712,
+          "torch_vram_free": 179598712
+        }
+      ]
+    },
+    {
+      "label": "workflow_after_second_cleanup",
+      "sampled_at": 1792838323.2198389,
+      "devices": [
+        {
+          "name": "cuda:0 NVIDIA RTX A3000 Laptop GPU : cudaMallocAsync",
+          "vram_total": 12884377600,
+          "vram_free": 11686080192,
+          "torch_vram_total": 167772160,
+          "torch_vram_free": 158035648
+        }
+      ]
+    }
+  ],
+  "cases": {
+    "free": {
+      "accepted": true,
+      "recovered_dirty_cycle": true,
+      "full_countdown_after_restart": true,
+      "prior_generation_not_replayed": true,
+      "vram_release_not_guaranteed_for_custom_index_cache": true
+    },
+    "workflow": {
+      "cleanup_cycles": 2,
+      "business": [
+        {
+          "seconds": 9.468,
+          "audio_bytes": 168378
+        },
+        {
+          "seconds": 7.212,
+          "audio_bytes": 126582
+        },
+        {
+          "seconds": 25.086,
+          "audio_bytes": 160576
+        }
+      ],
+      "reset_remaining_before": 7.575,
+      "reset_remaining_after": 9.795,
+      "different_cleanup_seeds": true,
+      "reload_after_cleanup_succeeded": true
+    }
+  },
+  "preliminary_case": {
+    "remote_generation_succeeded": true,
+    "audio_delivery_error": "invalid_audio_descriptor",
+    "reason": "nested Windows output subfolder",
+    "replayed": false,
+    "original_evidence_directory": "live-cache-030-20261024-1836"
+  }
+}

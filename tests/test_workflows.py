@@ -6,9 +6,9 @@ from uuid import uuid4
 
 import pytest
 
-from comfybridge.config import AppConfig, ConfigError, parse_json_strict
+from comfybridge.config import AppConfig, ConfigError, IdleReleaseConfig, parse_json_strict
 from comfybridge.workflows import (
-    WorkflowError, convert_ui_workflow, import_template, load_presets, validate_live,
+    LoadedPreset, MAX_CLEANUP_SEED, WorkflowError, convert_ui_workflow, import_template, load_presets, validate_live,
 )
 
 
@@ -43,7 +43,7 @@ def schemas():
     }
 
 
-def register(tmp_path, graph, *, policy="inherit", cache=True, **preset_overrides):
+def register(tmp_path, graph, *, policy="inherit", cache=True, idle_release=None, **preset_overrides):
     identifier = str(uuid4())
     relative, digest = import_template(tmp_path, graph, "index-tts-2.5", "example", identifier)
     preset = dict(id=identifier, model="index-tts-2.5", voice="example", template=relative,
@@ -52,7 +52,8 @@ def register(tmp_path, graph, *, policy="inherit", cache=True, **preset_override
         preset["cache_binding"] = {"node_id": "3", "field": "keep_models_cached"}
     preset.update(preset_overrides)
     config = AppConfig.model_validate({"server": {"api_key": "test-only-key"}, "comfyui": {},
-                                      "models": [{"id": "index-tts-2.5", "cache_policy": policy}], "presets": [preset]})
+                                      "models": [{"id": "index-tts-2.5", "cache_policy": policy,
+                                                  "idle_release": idle_release}], "presets": [preset]})
     return config
 
 
@@ -126,6 +127,229 @@ def test_prompt_isolation_full_text_and_cache(tmp_path, graph, policy, expected)
     first["1"]["inputs"]["audio"] = "changed"
     assert loaded.graph == original == graph
     assert second["1"]["inputs"]["audio"] != "changed"
+
+
+def test_loaded_preset_three_positional_arguments_remain_compatible(tmp_path, graph):
+    original = load(tmp_path, graph, policy="keep")
+    loaded = LoadedPreset(original.preset, original.graph, "keep")
+    assert loaded.idle_release is None
+    assert loaded.build_prompt("hello")["3"]["inputs"]["keep_models_cached"] is True
+
+
+@pytest.mark.parametrize("seed", [1, 2, MAX_CLEANUP_SEED])
+def test_idle_workflow_normal_keep_cleanup_release_and_exact_seed(tmp_path, graph, seed):
+    loaded = load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    original = deepcopy(loaded.graph)
+    normal = loaded.build_prompt("  Full normal text 😀\n ")
+    cleanup = loaded.build_cleanup_prompt("  好。  ", seed)
+    assert normal["3"]["inputs"]["keep_models_cached"] is True
+    assert normal["2"]["inputs"]["seed"] == original["2"]["inputs"]["seed"]
+    assert normal["2"]["inputs"]["text"] == "  Full normal text 😀\n "
+    expected = deepcopy(original)
+    expected["2"]["inputs"].update(text="  好。  ", seed=seed)
+    expected["3"]["inputs"]["keep_models_cached"] = False
+    assert cleanup == expected
+    assert loaded.graph == original == graph
+    cleanup["1"]["inputs"]["audio"] = "modified caller copy"
+    cleanup["2"]["inputs"]["cache_control"][0] = "changed"
+    assert loaded.graph == original
+    assert loaded.build_cleanup_prompt("好。", seed)["1"]["inputs"]["audio"] == original["1"]["inputs"]["audio"]
+
+
+def test_cleanup_prunes_unselected_nodes_and_changes_only_selected_bindings(tmp_path, graph):
+    graph["other"] = {"class_type": "OtherTTS", "inputs": {"text": "untouched", "seed": 123}}
+    graph["other_output"] = {"class_type": "SaveAudio", "inputs": {"audio": ["other", 0]}}
+    loaded = load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    assert set(loaded.build_cleanup_prompt("好。", 1)) == {"1", "2", "3", "4"}
+    assert loaded.graph["other"]["inputs"] == {"text": "untouched", "seed": 123}
+    first = loaded.build_cleanup_prompt("好。", 1)
+    second = loaded.build_cleanup_prompt("好。", 2)
+    assert first["2"]["inputs"]["seed"] == 1
+    first["2"]["inputs"]["seed"] = 2
+    assert first == second  # Durable seed is the only per-cleanup fingerprint change.
+
+
+def test_loaded_idle_settings_are_a_snapshot(tmp_path, graph):
+    cfg = register(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    loaded = load_presets(cfg, tmp_path)[("index-tts-2.5", "example")]
+    assert isinstance(loaded.idle_release, IdleReleaseConfig)
+    cfg.models[0].idle_release.seconds = 1
+    cfg.models[0].idle_release.text = "changed"
+    assert loaded.idle_release.seconds == 300 and loaded.idle_release.text == "好。"
+
+
+@pytest.mark.parametrize("cache", [False, True])
+def test_idle_free_normal_prompt_respects_only_explicit_binding(tmp_path, graph, cache):
+    loaded = load(tmp_path, graph, policy="idle_release", cache=cache, idle_release={"method": "free"})
+    expected = deepcopy(graph)
+    expected["2"]["inputs"]["text"] = "new business request"
+    if cache:
+        expected["3"]["inputs"]["keep_models_cached"] = True
+    assert loaded.build_prompt("new business request") == expected
+    assert loaded.graph == graph
+    with pytest.raises(WorkflowError, match="cache_cleanup_unsupported"):
+        loaded.build_cleanup_prompt("好。", 1)
+
+
+def test_idle_free_accepts_no_cache_node_and_unrelated_synthesis_class(tmp_path, graph, schemas):
+    del graph["3"]
+    del graph["2"]["inputs"]["cache_control"]
+    del graph["2"]["inputs"]["seed"]
+    graph["2"]["class_type"] = "OtherTTS"
+    schemas["OtherTTS"] = schemas.pop("IndexTTS25BaseNode")
+    del schemas["OtherTTS"]["input"]["optional"]["seed"]
+    loaded = load(tmp_path, graph, policy="idle_release", cache=False, idle_release={"method": "free"})
+    assert set(loaded.build_prompt("hello")) == {"1", "2", "4"}
+    assert validate_live(loaded, schemas) == []
+
+
+@pytest.mark.parametrize("seed", [0, -1, MAX_CLEANUP_SEED + 1, 2**64, True, False, 1.0, "1", None])
+def test_cleanup_seed_rejects_zero_invalid_or_exhausted_sequence(tmp_path, graph, seed):
+    loaded = load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    original = deepcopy(loaded.graph)
+    with pytest.raises(WorkflowError, match="cache_cleanup_seed_invalid"):
+        loaded.build_cleanup_prompt("好。", seed)
+    assert loaded.graph == original
+
+
+@pytest.mark.parametrize("text", ["", " \n", "x" * 65, "\ud800", "\x1b[31mx", None, 1, True])
+def test_cleanup_text_is_validated_without_mutation(tmp_path, graph, text):
+    loaded = load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    original = deepcopy(loaded.graph)
+    with pytest.raises(WorkflowError, match="cache_cleanup_text"):
+        loaded.build_cleanup_prompt(text, 1)
+    assert loaded.graph == original
+
+
+@pytest.mark.parametrize("policy", ["inherit", "keep", "release"])
+def test_cleanup_never_enabled_for_old_strategies(tmp_path, graph, policy):
+    loaded = load(tmp_path, graph, policy=policy)
+    with pytest.raises(WorkflowError, match="cache_cleanup_unsupported"):
+        loaded.build_cleanup_prompt("好。", 1)
+
+
+@pytest.mark.parametrize("seed", [None, False, "1", -1, MAX_CLEANUP_SEED + 1, ["1", 0]])
+def test_idle_workflow_rejects_nonliteral_or_out_of_range_template_seed(tmp_path, graph, seed):
+    graph["2"]["inputs"]["seed"] = seed
+    with pytest.raises(WorkflowError, match="cache_cleanup_seed_binding"):
+        load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+
+
+@pytest.mark.parametrize("seed", [0, MAX_CLEANUP_SEED])
+def test_idle_workflow_accepts_static_uint32_seed_boundaries(tmp_path, graph, seed):
+    graph["2"]["inputs"]["seed"] = seed
+    loaded = load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    assert loaded.build_prompt("normal")["2"]["inputs"]["seed"] == seed
+    assert loaded.build_cleanup_prompt("好。", 1)["2"]["inputs"]["seed"] == 1
+
+
+@pytest.mark.parametrize("mutation", ["other_class", "other_text_field", "voice_class"])
+def test_idle_workflow_only_supports_explicit_base_synthesis_text_binding(tmp_path, graph, mutation):
+    binding = {"node_id": "2", "field": "text"}
+    if mutation == "other_class":
+        graph["2"]["class_type"] = "OtherTTS"
+    elif mutation == "voice_class":
+        graph["2"]["class_type"] = "IndexTTS25VoiceBaseNode"
+    else:
+        binding["field"] = "lang"
+    with pytest.raises(WorkflowError, match="cache_cleanup_unsupported"):
+        load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"}, text_binding=binding)
+
+
+def test_idle_workflow_cache_binding_still_must_feed_selected_synthesis(tmp_path, graph):
+    del graph["2"]["inputs"]["cache_control"]
+    with pytest.raises(WorkflowError, match="workflow_cache_binding"):
+        load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+
+
+def test_optional_missing_seed_is_inserted_only_for_cleanup(tmp_path, graph, schemas):
+    del graph["2"]["inputs"]["seed"]
+    schemas["IndexTTS25BaseNode"]["input"]["optional"]["seed"] = ["INT", {"min": 0, "max": MAX_CLEANUP_SEED}]
+    loaded = load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    original = deepcopy(loaded.graph)
+    assert "seed" not in loaded.build_prompt("normal")["2"]["inputs"]
+    assert loaded.build_cleanup_prompt("好。", 1)["2"]["inputs"]["seed"] == 1
+    assert validate_live(loaded, schemas) == []
+    assert loaded.graph == original
+
+
+@pytest.mark.parametrize("seed_schema", [
+    ["INT"], ["INT", {}], ["INT", {"min": 0, "max": MAX_CLEANUP_SEED}],
+    ["INT", {"min": -1, "max": 2**64 - 1}],
+])
+def test_live_cleanup_seed_accepts_full_supported_range(tmp_path, graph, schemas, seed_schema):
+    schemas["IndexTTS25BaseNode"]["input"]["optional"]["seed"] = seed_schema
+    loaded = load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    before_graph, before_schemas = deepcopy(loaded.graph), deepcopy(schemas)
+    assert validate_live(loaded, schemas) == []
+    assert loaded.graph == before_graph and schemas == before_schemas
+
+
+@pytest.mark.parametrize("seed_schema", [
+    None, ["FLOAT"], ["STRING"], ["*"], [[0, 1, 2]], ["INT", None],
+    ["INT", {"min": True}], ["INT", {"max": "4294967295"}], ["INT", {"max": float("inf")}],
+])
+def test_live_cleanup_seed_missing_wrong_type_or_malformed_fails_closed(tmp_path, graph, schemas, seed_schema):
+    del graph["2"]["inputs"]["seed"]
+    optional = schemas["IndexTTS25BaseNode"]["input"]["optional"]
+    if seed_schema is None:
+        del optional["seed"]
+    else:
+        optional["seed"] = seed_schema
+    loaded = load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    assert "cache_cleanup_seed_schema" in validate_live(loaded, schemas)
+
+
+@pytest.mark.parametrize("constraints", [{"min": 1}, {"max": MAX_CLEANUP_SEED - 1}, {"min": 0, "max": 100}])
+def test_live_cleanup_requires_entire_seed_range(tmp_path, graph, schemas, constraints):
+    schemas["IndexTTS25BaseNode"]["input"]["optional"]["seed"] = ["INT", constraints]
+    loaded = load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    assert "cache_cleanup_seed_range" in validate_live(loaded, schemas)
+
+
+def test_live_cleanup_accepts_required_seed_when_normal_template_supplies_it(tmp_path, graph, schemas):
+    inputs = schemas["IndexTTS25BaseNode"]["input"]
+    del inputs["optional"]["seed"]
+    inputs["required"]["seed"] = ["INT", {"min": 0, "max": MAX_CLEANUP_SEED}]
+    loaded = load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    assert validate_live(loaded, schemas) == []
+
+
+def test_live_cleanup_rejects_ambiguous_seed_definition(tmp_path, graph, schemas):
+    schemas["IndexTTS25BaseNode"]["input"]["required"]["seed"] = ["INT"]
+    loaded = load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    assert "cache_cleanup_seed_schema" in validate_live(loaded, schemas)
+
+
+def test_live_cleanup_text_error_remains_sanitized_diagnostic(tmp_path, graph, schemas):
+    loaded = load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    invalid = loaded.idle_release.model_copy(update={"text": "PRIVATE" * 100})
+    damaged = LoadedPreset(loaded.preset, loaded.graph, "idle_release", invalid)
+    assert "cache_cleanup_text" in validate_live(damaged, schemas)
+
+
+def test_live_cleanup_static_errors_remain_explicit_without_execution(tmp_path, graph, schemas):
+    loaded = load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"})
+    damaged_graph = deepcopy(loaded.graph)
+    damaged_graph["2"]["inputs"]["seed"] = True
+    damaged = LoadedPreset(loaded.preset, damaged_graph, "idle_release", loaded.idle_release)
+    assert validate_live(damaged, schemas) == ["cache_cleanup_seed_binding"]
+    damaged_graph["2"]["inputs"]["seed"] = 1
+    damaged_graph["2"]["class_type"] = "OtherTTS"
+    assert validate_live(damaged, schemas) == ["cache_cleanup_unsupported"]
+
+
+def test_old_strategies_retain_wider_normal_template_seed_support(tmp_path, graph, schemas):
+    graph["2"]["inputs"]["seed"] = 2**64 - 1
+    loaded = load(tmp_path, graph, policy="keep")
+    assert loaded.build_prompt("normal")["2"]["inputs"]["seed"] == 2**64 - 1
+    assert validate_live(loaded, schemas) == []
+
+
+def test_legacy_seed_constraints_do_not_become_cleanup_constraints(tmp_path, graph, schemas):
+    schemas["IndexTTS25BaseNode"]["input"]["optional"]["seed"] = ["INT", {"min": 100, "max": 500000000}]
+    assert validate_live(load(tmp_path, graph, policy="keep"), schemas) == []
+    assert validate_live(load(tmp_path, graph, policy="idle_release", idle_release={"method": "free"}), schemas) == []
 
 
 def test_inherit_preserves_true_and_can_omit_cache(tmp_path, graph):

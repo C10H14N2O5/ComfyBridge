@@ -181,6 +181,24 @@ class ComfyClient:
         except (httpx.HTTPError, asyncio.TimeoutError):
             raise ComfyError("remote_unavailable") from None
 
+    async def free(self) -> None:
+        """Request instance-wide release once; 200 acknowledges flags, not VRAM completion.
+
+        The service must establish local exclusivity and observe an idle remote queue.
+        Native ComfyUI returns an empty body; do not require or consume JSON here.
+        A transport failure may still have applied the flags and must not be replayed.
+        """
+        try:
+            async with asyncio.timeout(self.limits.query_timeout):
+                async with self.http.stream(
+                    "POST", "free", json={"unload_models": True, "free_memory": True},
+                    timeout=httpx.Timeout(self.limits.query_timeout, connect=self.limits.connect_timeout),
+                ) as response:
+                    if response.status_code != 200:
+                        raise ComfyError("cache_free_http_error")
+        except (httpx.HTTPError, OSError, asyncio.TimeoutError):
+            raise ComfyError("cache_free_uncertain") from None
+
     @staticmethod
     def audio_descriptor(history: dict, output_node: str) -> dict:
         outputs = history.get("outputs")

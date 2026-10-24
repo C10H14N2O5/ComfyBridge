@@ -4,7 +4,6 @@ from __future__ import annotations
 import copy
 import getpass
 from pathlib import Path
-import re
 import uuid
 
 from .platform_windows import InstanceLock
@@ -68,12 +67,31 @@ MESSAGES = {
     'inherit': ('跟随工作流', 'Follow workflow'),
     'keep': ('保持缓存', 'Keep cache'),
     'release': ('生成后不保留', 'Do not retain after generation'),
+    'idle_release': ('定时丢弃', 'Release after idle timeout'),
+    'idle_seconds': ('空闲等待秒数（1–86400）', 'Idle timeout in seconds (1–86400)'),
+    'idle_method': ('明确选择定时丢弃方式', 'Explicitly select the idle-release method'),
+    'idle_free': ('ComfyUI /free：请求实例级卸载', 'ComfyUI /free: request instance-wide unloading'),
+    'idle_workflow': ('工作流：运行一次短文本清理任务', 'Workflow: run a short-text cleanup task'),
+    'idle_free_warning': ('此方式会请求卸载整个 ComfyUI 实例的模型，可能影响其他工作流和用户；只在远端队列为空时请求，但无法锁定其他客户端。请求被受理不证明显存已释放。仅保存配置不会立即发送请求。确认启用？', 'This requests model unloading across the entire ComfyUI instance and may affect other workflows/users. It only requests while the remote queue is empty, but cannot lock other clients. Acceptance does not prove VRAM was freed. Saving settings sends no request now. Enable this method?'),
+    'idle_workflow_warning': ('此方式在空闲到期后会提交真实 GPU 工作流，并可能在 ComfyUI 保留音频产物；使用该模型最后一次提交的音色预设，同一模型下所有音色必须共享可释放的缓存。清理工作流完成也不证明显存已释放。仅保存配置不会运行生成。确认启用？', 'After the idle timeout this method submits a real GPU workflow and may leave audio artifacts in ComfyUI. It uses the last submitted preset; all voices of this model must share a releasable cache. Workflow completion does not prove VRAM was freed. Saving settings runs no generation. Enable this method?'),
+    'idle_text': ('清理任务短文本（1–64 字符；留空保留）', 'Cleanup task text (1–64 characters; blank keeps current)'),
+    'idle_summary': ('    空闲 {seconds} 秒后；方式：{method}', '    After {seconds} idle seconds; method: {method}'),
+    'idle_release_settings_required': ('定时丢弃必须设置等待秒数和明确选择清理方式。', 'Idle release requires settings and an explicitly selected method.'),
+    'idle_release_settings_not_applicable': ('非定时丢弃策略不能保留定时清理设置。', 'Other cache policies cannot retain idle-release settings.'),
+    'invalid_idle_release_text': ('清理文本必须为 1–64 字符且不能全为空白；请勿包含控制字符。', 'Cleanup text must contain 1–64 characters and must not be blank or contain control characters.'),
+    'workflow_idle_release_settings': ('工作流的定时丢弃设置与缓存策略不一致。', 'Workflow idle-release settings do not match the cache policy.'),
+    'cache_cleanup_unsupported': ('工作流清理需要 IndexTTS25BaseNode 的 text 输入；请更换模板或使用 /free。', 'Workflow cleanup requires the IndexTTS25BaseNode text input; change the template or use /free.'),
+    'cache_cleanup_seed_binding': ('清理模板的 seed 必须为 32 位非负整数或省略，不能连接其他节点。', 'Cleanup template seed must be a literal unsigned 32-bit integer or omitted, not a node link.'),
+    'cache_cleanup_seed_invalid': ('清理任务种子无效或已耗尽；不会提交任务。', 'Cleanup task seed is invalid or exhausted; no task will be submitted.'),
+    'cache_cleanup_text': ('清理任务短文本无效，请检查长度和空白字符。', 'Cleanup task text is invalid; check its length and whitespace.'),
+    'cache_cleanup_seed_schema': ('远端节点必须提供兼容的 INT seed 输入。', 'The remote node must expose a compatible INT seed input.'),
+    'cache_cleanup_seed_range': ('远端 seed 输入必须支持完整的 0–4294967295 范围。', 'The remote seed input must support the complete 0–4294967295 range.'),
     'workflow_file': ('工作流 JSON 文件（修改时留空保留旧模板；0 返回）：', 'Workflow JSON file (blank retains old template when editing; 0 returns): '),
     'import_note': ('只复制 JSON，不复制参考音频或模型文件；不会执行生成。', 'Import copies JSON only, not reference audio/model assets. No generation will run.'),
     'select_text': ('明确选择文本注入字段', 'Explicitly select text injection field'),
     'select_output': ('明确选择最终音频输出节点', 'Explicitly select final audio output node'),
     'select_cache': ('明确选择缓存控制绑定', 'Explicitly select cache binding'),
-    'no_cache': ('不绑定缓存控制（仅限跟随工作流）', 'No cache binding (inherit only)'),
+    'no_cache': ('不绑定缓存控制（仅限跟随工作流或定时 /free）', 'No cache binding (inherit or timed /free only)'),
     'apply_preset': ('将此预设变更应用到草稿？', 'Apply this preset change to the draft?'),
     'confirm_delete_model': ('删除此模型及其全部预设？', 'Delete this model and ALL its presets?'),
     'confirm_delete_preset': ('删除此预设登记（保留不可变 JSON 文件）？', 'Delete this registration (keep immutable JSON files)?'),
@@ -118,6 +136,29 @@ MESSAGES = {
 }
 
 
+_DIAGNOSTIC_TYPES = frozenset({'missing', 'extra_forbidden', 'value_error', 'literal_error',
+    'string_type', 'string_too_short', 'string_too_long', 'string_pattern_mismatch', 'int_type',
+    'int_parsing', 'int_parsing_size', 'int_from_float', 'float_type', 'float_parsing', 'finite_number',
+    'greater_than', 'greater_than_equal', 'less_than', 'less_than_equal', 'list_type', 'dict_type',
+    'model_type', 'model_attributes_type', 'bool_type', 'none_required'})
+_WORKFLOW_DIAGNOSTICS = frozenset({
+    'json_duplicate_key', 'json_nonfinite', 'json_invalid', 'path_outside_data_dir', 'config_symlink',
+    'workflow_invalid_json', 'workflow_invalid_graph', 'workflow_invalid_node', 'workflow_invalid_input',
+    'workflow_invalid_link', 'workflow_missing_node', 'workflow_cycle', 'workflow_text_type',
+    'workflow_cache_binding', 'workflow_text_binding', 'workflow_audio_binding', 'workflow_path_escape',
+    'workflow_digest_mismatch', 'workflow_immutable_conflict', 'workflow_idle_release_settings',
+    'cache_cleanup_unsupported', 'cache_cleanup_seed_binding', 'cache_cleanup_seed_invalid',
+    'cache_cleanup_text', 'cache_cleanup_seed_schema', 'cache_cleanup_seed_range',
+    'ui_invalid_id', 'ui_invalid_graph', 'ui_subgraph_unsupported', 'ui_invalid_node',
+    'ui_unsupported_class', 'ui_inactive_node', 'ui_duplicate_node', 'ui_widget_map', 'ui_widget_type',
+    'ui_invalid_link', 'ui_output_slot', 'ui_target_slot', 'ui_invalid_input', 'ui_missing_link',
+    'invalid_preset_id', 'schema_missing_class', 'schema_invalid', 'schema_invalid_graph',
+    'schema_missing_required_input', 'schema_unknown_input', 'schema_combo_multiselect_unsupported',
+    'schema_missing_node', 'schema_output_slot', 'schema_link_type', 'schema_combo_value',
+    'schema_input_type', 'schema_input_range', 'schema_input_requires_link', 'schema_text_binding',
+    'schema_cache_binding', 'schema_audio_output'})
+
+
 def diagnostic(error: Exception, ui=None) -> str:
     """Actionable locations/codes without input/context/raw exception strings."""
     from pydantic import ValidationError
@@ -125,13 +166,13 @@ def diagnostic(error: Exception, ui=None) -> str:
     from .workflows import WorkflowError
     ui = ui or UIContext()
     if isinstance(error, ValidationError):
-        from .config import (AppConfig, Binding, ComfyConfig, LimitsConfig, LoggingConfig,
-                             ModelConfig, PresetConfig, ServerConfig)
+        from .config import (AppConfig, Binding, ComfyConfig, IdleReleaseConfig, LimitsConfig,
+                             LoggingConfig, ModelConfig, PresetConfig, ServerConfig)
         # Pydantic locations are not inherently safe: extra_forbidden and mapping
         # validation may include arbitrary input keys, even when input/context are
         # omitted. Display only trusted schema field names and list indices.
-        known_fields = {name for model in (AppConfig, Binding, ComfyConfig, LimitsConfig,
-                                          LoggingConfig, ModelConfig, PresetConfig, ServerConfig)
+        known_fields = {name for model in (AppConfig, Binding, ComfyConfig, IdleReleaseConfig,
+                                          LimitsConfig, LoggingConfig, ModelConfig, PresetConfig, ServerConfig)
                         for name in model.model_fields}
         details = []
         for item in error.errors(include_input=False, include_context=False, include_url=False)[:8]:
@@ -140,13 +181,13 @@ def diagnostic(error: Exception, ui=None) -> str:
                 (type(part) is str and part in known_fields) or (type(part) is int and part >= 0)
                 for part in parts)
             location = '.'.join(str(part) for part in parts) if safe_location else 'configuration'
-            kind = item['type'] if re.fullmatch(r'[a-z0-9_]{1,80}', item['type']) else 'invalid_value'
+            kind = item['type'] if item['type'] in _DIAGNOSTIC_TYPES else 'invalid_value'
             details.append(f'{location or "configuration"}: {kind}')
         return ui.t(MESSAGES, 'invalid_fields', details='; '.join(details))
     if isinstance(error, (ConfigError, WorkflowError)):
         code = str(error)
-        if re.fullmatch(r'[a-z][a-z0-9_]{1,80}', code):
-            return ui.t(MESSAGES, 'workflow_error', code=code)
+        if code in _WORKFLOW_DIAGNOSTICS:
+            return ui.t(MESSAGES, code) if code in MESSAGES else ui.t(MESSAGES, 'workflow_error', code=code)
     if isinstance(error, FileNotFoundError):
         return ui.t(MESSAGES, 'missing_file')
     if isinstance(error, PermissionError):
@@ -154,7 +195,8 @@ def diagnostic(error: Exception, ui=None) -> str:
     if isinstance(error, OSError):
         return ui.t(MESSAGES, 'io_error')
     codes = {'no_candidates', 'duplicate_model', 'unknown_model', 'model_has_presets',
-             'duplicate_preset_choose_edit', 'unknown_preset', 'template_too_large', 'invalid_workflow', 'invalid_selection'}
+             'duplicate_preset_choose_edit', 'unknown_preset', 'template_too_large', 'invalid_workflow', 'invalid_selection',
+             'idle_release_settings_required', 'idle_release_settings_not_applicable', 'invalid_idle_release_text'}
     if isinstance(error, ValueError) and str(error) in codes:
         return ui.t(MESSAGES, str(error))
     return ui.t(MESSAGES, 'invalid_operation')
@@ -174,14 +216,23 @@ def validate_draft(data_dir: Path, draft: dict):
     return config
 
 
-def put_model(draft: dict, model_id: str, cache_policy: str = 'inherit', *, replace: str | None = None) -> None:
+def put_model(draft: dict, model_id: str, cache_policy: str = 'inherit', *, replace: str | None = None,
+              idle_release: dict | None = None) -> None:
     from .config import ModelConfig
-    model = ModelConfig(id=model_id, cache_policy=cache_policy).model_dump(mode='json')
-    models = draft.setdefault('models', [])
+    models = draft.get('models', [])
+    previous = next((m for m in models if m['id'] == replace), None) if replace is not None else None
+    # Preserve an unchanged idle policy when a programmatic edit only renames it.
+    if idle_release is None and cache_policy == 'idle_release' and previous:
+        idle_release = copy.deepcopy(previous.get('idle_release'))
+    payload = {'id': model_id, 'cache_policy': cache_policy}
+    if idle_release is not None:
+        payload['idle_release'] = idle_release
+    # Policy/settings consistency is validated atomically, never by assignments.
+    model = ModelConfig.model_validate(payload).model_dump(mode='json', exclude_none=True)
     if any(m['id'] == model_id and m['id'] != replace for m in models):
         raise ValueError('duplicate_model')
     if replace is None:
-        models.append(model)
+        draft.setdefault('models', []).append(model)
     else:
         index = next((i for i, m in enumerate(models) if m['id'] == replace), None)
         if index is None:
@@ -376,11 +427,27 @@ class Wizard:
         draft[section] = model.model_validate(values).model_dump(mode='json')
 
     def model(self, draft: dict, *, edit: bool = False):
-        from .config import ModelConfig
+        from .config import IdleReleaseConfig, ModelConfig
         old = self.choose(self.t('model'), [(m['id'], m['id']) for m in draft.get('models', [])]) if edit else None
+        previous = next((m for m in draft.get('models', []) if m['id'] == old), {})
         name = self.field(self.t('model_id'), old or '', str, lambda value: ModelConfig(id=value))
-        policy = self.choose(self.t('cache_strategy'), [(key, self.t(key)) for key in ('inherit', 'keep', 'release')])
-        put_model(draft, name, policy, replace=old)
+        policy = self.choose(self.t('cache_strategy'), [(key, self.t(key)) for key in ('inherit', 'keep', 'release', 'idle_release')])
+        idle = None
+        if policy == 'idle_release':
+            existing = previous.get('idle_release') or {}
+            # Validate seconds independently without choosing a default method for
+            # the user; the temporary validator's method has no persisted effect.
+            seconds = self.field(self.t('idle_seconds'), existing.get('seconds', 300), int,
+                                 lambda value: IdleReleaseConfig(seconds=value, method='free'))
+            method = self.choose(self.t('idle_method'), [(key, self.t('idle_' + key)) for key in ('free', 'workflow')])
+            if not self.confirm('idle_' + method + '_warning'):
+                return  # no partial rename, policy change, or implicit acceptance
+            text = existing.get('text', '好。')
+            if method == 'workflow':
+                text = self.field(self.t('idle_text'), text, str,
+                                  lambda value: IdleReleaseConfig(seconds=seconds, method=method, text=value))
+            idle = IdleReleaseConfig(seconds=seconds, method=method, text=text).model_dump(mode='json')
+        put_model(draft, name, policy, replace=old, idle_release=idle)
 
     def show_preset(self, preset: dict):
         self.say(f"{self.t('model_id')}: {safe_text(preset.get('model', ''))}")
@@ -407,6 +474,14 @@ class Wizard:
             self.say(self.t('models_title'))
             for item in data.get('models', []):
                 self.say(f"  {safe_text(item['id'])}: {self.t(item.get('cache_policy', 'inherit'))}")
+                if item.get('cache_policy') == 'idle_release' and isinstance(item.get('idle_release'), dict):
+                    idle = item['idle_release']
+                    method = idle.get('method')
+                    seconds = idle.get('seconds')
+                    seconds = seconds if type(seconds) is int and 1 <= seconds <= 86400 else '—'
+                    self.say(self.t('idle_summary', seconds=seconds,
+                                    method=self.t('idle_' + method) if method in ('free', 'workflow') else self.t('empty')))
+                    # Cleanup text is private config content; never include it in summaries.
             if not data.get('models'):
                 self.say(self.t('empty'))
         if section in (None, 'presets'):

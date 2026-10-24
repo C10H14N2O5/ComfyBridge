@@ -38,6 +38,69 @@ async def test_submission_is_single_attempt_and_uncertain(mode):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("body", [b"", b"{}", b"not-json"])
+async def test_free_posts_once_and_accepts_native_empty_ack(body):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/prefix/free"
+        assert json.loads(request.content) == {"unload_models": True, "free_memory": True}
+        return httpx.Response(200, content=body)
+    client = ComfyClient("http://mock.invalid/prefix", LimitsConfig(), transport=httpx.MockTransport(handler))
+    try:
+        assert await client.free() is None
+        assert len(calls) == 1
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["timeout", "network", "os", "redirect", "server_error", "not_found"])
+async def test_free_failure_is_sanitized_never_retried(mode):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        if mode == "timeout":
+            raise httpx.ReadTimeout("private remote data", request=request)
+        if mode == "network":
+            raise httpx.ConnectError("private remote data", request=request)
+        if mode == "os":
+            raise OSError("private remote data")
+        return httpx.Response({"redirect": 307, "server_error": 500, "not_found": 404}[mode],
+                              headers={"location": "/free"}, text="private remote data")
+    client = ComfyClient("http://mock.invalid", LimitsConfig(), transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ComfyError) as caught:
+            await client.free()
+        assert str(caught.value) == ("cache_free_uncertain" if mode in {"timeout", "network", "os"} else "cache_free_http_error")
+        assert len(calls) == 1
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_free_is_bounded_and_cancellation_propagates():
+    calls = []
+    async def handler(request):
+        calls.append(request)
+        await asyncio.Event().wait()
+    client = ComfyClient("http://mock.invalid", LimitsConfig(query_timeout=0.02), transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ComfyError, match="cache_free_uncertain"):
+            await asyncio.wait_for(client.free(), timeout=1)
+        assert len(calls) == 1
+        task = asyncio.create_task(client.free())
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(calls) == 2
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_native_failure_completed_false_is_terminal():
     task_id = str(uuid.uuid4())
     def handler(request):

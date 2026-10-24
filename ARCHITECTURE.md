@@ -1,6 +1,6 @@
-# Approved implementation contract — ComfyBridge MVP
+# Implementation contract — ComfyBridge 0.3.0
 
-This document records the approved 2026-10-23 plan and shared module contracts. It is not a completion report. `todo.md` remains the user requirements record. No code may modify ComfyUI installation, canvas, other projects, global queues/history, or interrupt running GPU jobs.
+This document records the original 2026-10-23 contracts and approved 2026-10-24 extensions. It is not a completion report. The [requirements record](<todo.md>) retains historical decisions. No code may modify ComfyUI installation/canvas, clear global queues/history, or interrupt running GPU jobs. The explicit v0.3.0 `/free` policy is an authorized instance-wide model/memory release, not a targeted per-model operation.
 
 ## Scope and milestones
 
@@ -24,7 +24,8 @@ Pydantic v2 models in config.py (extra=forbid):
 - ComfyConfig(base_url='http://127.0.0.1:8188'; HTTP(S), no credentials/query/fragment)
 - LimitsConfig(max_input_chars=4096, max_body_bytes=65536, max_inflight=1, max_queue=8, request_timeout=300.0, connect_timeout=3.0, query_timeout=3.0, submit_timeout=15.0, download_timeout=60.0, transcode_timeout=60.0, poll_interval=1.0, probe_interval=5.0, max_audio_bytes=134217728, max_audio_seconds=600.0)
 - LoggingConfig(max_bytes=10485760, backup_count=5)
-- ModelConfig(id:str, cache_policy='inherit'|'keep'|'release')
+- IdleReleaseConfig(seconds:int=300, strict range1..86400, method='free'|'workflow' required, text:str='好。' nonblank1..64)
+- ModelConfig(id:str, cache_policy='inherit'|'keep'|'release'|'idle_release', idle_release:IdleReleaseConfig|None=None); settings required iff idle policy
 - PresetConfig(id:canonical UUID str, model:str, voice:str, template:str relative under workflows/, sha256:str, text_binding:Binding, audio_output_node:str, cache_binding:Binding|None=None)
 - AppConfig(schema_version=1, server:ServerConfig, comfyui:ComfyConfig, limits:LimitsConfig default, logging:LoggingConfig default, models:list[ModelConfig]=[], presets:list[PresetConfig]=[])
 
@@ -68,7 +69,7 @@ Persist only IDs, backend URL, template/config version, states/times and sanitiz
 
 Poll queue + history; history status_str success/error is authoritative terminal, completed=false may mean error. GET /history/{id}={} is unknown, NOT canceled. Lost POST response -> reconcile preassigned id, correlation scan if needed (bounded 1000 entries/32MiB); don't resubmit. Unknown pauses new submissions to that target, persists across restart and requires evidence or explicit admin resolution.
 
-Delete only own observed/acknowledged pending via POST /queue {delete:[id]}; 200 not proof. Recheck queue/history, let running finish. Two healthy absent observations AFTER known admission+delete with no outstanding submission can settle NOT_ACTIVE (not prove unexecuted). Never call jobs cancel, /interrupt, global clear/free/history delete. On crash restart, abandon old HTTP, cancel owned pending safely, follow running, mark terminal without fetching audio, unknown stays blocked. Old backend address change does not clear old tasks.
+Delete only own observed/acknowledged pending via POST /queue {delete:[id]}; 200 not proof. Recheck queue/history, let running finish. Two healthy absent observations AFTER known admission+delete with no outstanding submission can settle NOT_ACTIVE (not prove unexecuted). Never call jobs cancel, /interrupt, global queue clear or history delete. `/free` is only permitted by the explicit idle-release method described below. On crash restart, abandon old HTTP, cancel owned pending safely, follow running, mark terminal without fetching audio, unknown stays blocked. Old backend address change does not clear old tasks.
 
 One processing slot default and 8 waiting. Client deadline300 includes waiting, download/transcode. Active poll1s/offline5s. Local invalid config fails service startup but management UI can repair. Remote schemas per-preset readiness. Offline new TTS503; GET models and monitor work. Existing admitted jobs don't get reposted. No exactly-once promise across client retries.
 
@@ -95,6 +96,17 @@ Transient independent restart controller validates proposed config, records last
 Monitor refresh2s/logtail50 configurable in implementation if appropriate, Q/CtrlC/window close monitor only; explicit confirmed stop. Wizard config edit plus model/preset CRUD, file import conversion, menu-select input/output/cache bindings, validate then save; no generation. Current config vs pending shown. Startup current-user shortcut opt-in starts backend+home; no default install, migration needs re-register.
 
 0.2.0 UI: independent strict atomic ui.json stores zh-CN/en-US under an independent ui writer lock; it never participates in business configuration digests or service snapshots. Initial language abort prevents automatic startup. All normal operations are reachable from the vertical home menu, with explicit default-cancel stop/restart/force/acknowledgement confirmations and save/discard/continue on dirty editor return. Embedded Monitor Q/0 returns home; observer exit never stops service. Shared ConsoleInput avoids mixing buffered TextIO with raw reads: real consoles keep nonblocking immediate Monitor keys; redirected UTF-8 input consumes complete command lines before confirmations and uses non-prefetching prompts. Background/internal commands never ask language; status JSON/canonical IDs/codes remain unchanged. Known-field display and diagnostic-location allowlists avoid echoing arbitrary configuration keys or payloads. See [UI contract](<docs/UI_020_PLAN.md>) and [verification](<docs/UI_020_VALIDATION.md>).
+
+## 0.3.0 idle-release contract
+
+The fourth model policy is explicitly configured from the existing cache menu, not inferred from node names or VRAM. All admitted business requests invalidate the shared idle epoch; only complete local business/remote/recovery/delivery quiescence starts the full per-model duration using a monotonic clock. Never-used models are not cleaned. External running/pending queues postpone both methods. A local activity generation is rechecked after asynchronous preflight, and a single cleanup gate prevents business POSTs racing any cache operation even when max_inflight > 1. Work already submitted is not canceled merely because new business arrives; normal capacity/deadlines still apply. Cleanup activity does not rearm itself.
+
+- `ComfyClient.free()` performs exactly one POST with unload_models/free_memory true, accepts native200 empty body, follows no redirect and makes no physical-VRAM guarantee. It coalesces dirty free-mode models for the same URL; earliest expiry may release other models early. It cannot prove custom global plugin caches were unloaded and does not clear workflow-mode records. Remote query/POST cannot lock other clients.
+- Workflow cleanup uses the latest actually submitted preset of the model. The user-tested same-model/different-reference workflow copies share a releasable cache; different weights/plugins are outside that assumption. Normal business injects keep=true when bound; free mode may omit the binding. `LoadedPreset.build_cleanup_prompt(text, seed)` deep-copies the selected ancestors, injects false and a strictly validated positive uint32 seed, and never changes business templates. The durable nonwrapping sequence belongs to the journal. The supported cleanup synthesis node is IndexTTS25BaseNode with validated text/cache/seed; unsupported nodes fail explicitly.
+- Workflow cleanup is an internal purpose-tagged task with transactional intent BEFORE a single POST, original-URL correlation and existing conservative recovery. No HTTP caller is not a disconnect. No audio download/transcode/delivery for cleanup. Remote SaveAudio artifacts are not deleted. On expiry only owned observed-pending deletion is allowed; running/unknown remains tracked and gates dispatch until terminal evidence or explicit admin acknowledgment.
+- SQLite additive migration retains old speech task rows and stores safe model/preset/template/URL/cycle identity, no text/graph/audio/key. Cache-cycle completion and task terminal transitions are atomic. `/free` has its own durable operation intent/outcome, not a fictional prompt ID recoverable from history. Unknown/failed attempts are not replayed per cycle; new real business use of that model creates a new opportunity.
+- On restart reconcile unfinished tasks, then wait a full interval for matching pending cycles. Do not guess cleanup from changed/deleted templates or a different URL; mark stale until new use. Drain prevents new cleanup; force preserves unfinished records. Closing the observer leaves timers running.
+- Status adds safe `cache` rows and task purpose without changing speech/models protocol. Distinguish requested /free versus completed workflow versus measured VRAM; bilingual UI and diagnostics use allowlists. Details: [cache guide](<docs/CACHE_030.md>) and [acceptance](<docs/CACHE_030_VALIDATION.md>).
 
 ## Tests and release
 
