@@ -64,4 +64,4 @@ Monitor 显示倒计时、等待远端空闲、卸载中、完成/请求受理�
 
 `/free` 不具有 prompt ID，也无法用生成历史证实；其网络失败单独标记为结果不明，不永久阻塞业务，不自动重发。
 
-源码、模拟器与真实环境验证分别记录在 [v0.3.0 验收](<CACHE_030_VALIDATION.md>)。使用说明见 [README](<../README.md>)。
+测试与发布要求见 [架构说明](<../ARCHITECTURE.md#tests-and-release>)，使用说明见 [README](<../README.md>)。
