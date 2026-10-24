@@ -1,4 +1,4 @@
-# Implementation contract — ComfyBridge 0.3.0
+# Implementation contract — ComfyBridge 0.4.0
 
 This document records the original 2026-10-23 contracts and approved 2026-10-24 extensions. It is not a completion report. The [requirements record](<todo.md>) retains historical decisions. No code may modify ComfyUI installation/canvas, clear global queues/history, or interrupt running GPU jobs. The explicit v0.3.0 `/free` policy is an authorized instance-wide model/memory release, not a targeted per-model operation.
 
@@ -107,6 +107,22 @@ The fourth model policy is explicitly configured from the existing cache menu, n
 - SQLite additive migration retains old speech task rows and stores safe model/preset/template/URL/cycle identity, no text/graph/audio/key. Cache-cycle completion and task terminal transitions are atomic. `/free` has its own durable operation intent/outcome, not a fictional prompt ID recoverable from history. Unknown/failed attempts are not replayed per cycle; new real business use of that model creates a new opportunity.
 - On restart reconcile unfinished tasks, then wait a full interval for matching pending cycles. Do not guess cleanup from changed/deleted templates or a different URL; mark stale until new use. Drain prevents new cleanup; force preserves unfinished records. Closing the observer leaves timers running.
 - Status adds safe `cache` rows and task purpose without changing speech/models protocol. Distinguish requested /free versus completed workflow versus measured VRAM; bilingual UI and diagnostics use allowlists. Details: [cache guide](<docs/CACHE_030.md>) and [acceptance](<docs/CACHE_030_VALIDATION.md>).
+
+## 0.4.0 offline Setup contract
+
+The user-facing release is one offline Windows x64 Setup EXE wrapping the same onedir runtime. The install root is the actual setup executable parent, never cwd or the onefile temporary extraction root. Setup is not a runtime launcher: normal ComfyBridge.exe is extracted and used independently. No system registration, firewall changes, Startup rewrite, online updater, forced process termination, automatic backend start or downgrade.
+
+The bilingual numbered console offers Install / Update / Exit. Fresh install requires a dedicated empty directory except the running installer. Update recognizes product metadata conservatively, permits same-version repair, shows version/root/data/backup scope and defaults confirmation to cancel. External data selection is backup-only and does not alter the existing explicit --data-dir invocation.
+
+Schema-1 payload metadata identifies product/version/platform/launcher/build ID/archive SHA-256 and every exact relative file path/size/hash. Receipt and journal live under `.comfybridge-install`; reserved data and backup paths can never be payload targets. Validate case-insensitive collisions, DOS names, traversal, links, reparse points, hardlinks and root overlaps. Work on writable local fixed NTFS only. Preserve unknown files, fail on unknown collisions, and never let a legacy editable checksum list authorize arbitrary deletion. Legacy old-only paths without trusted retirement evidence are retained.
+
+Setup first validates/extracts staging, obtains exclusive installation/data leases, checks legacy managed-file/process occupancy read-only, then creates and verifies private full old-program and selected-data backups. All relevant old writers must already be stopped; cross-version management status is not proof of absence. New packaged roles hold lifetime shared installation/data leases and refuse an incomplete transaction. Existing data mutexes remain independently in force.
+
+A durable per-file write-ahead transaction journal tracks reversible changes; withdraw old executable early, publish new executable last, verify all files and perform a no-business self-test before committing the receipt. Ordinary failure restores program files only; interrupted transactions are recovered before another install. Ambiguous recovery blocks instead of guessing. This is recoverability, not a multi-file atomic transaction or protection against failing storage.
+
+Data backup includes SQLite sidecars and all workflow/snapshot/history contents while quiescent; updater never migrates or restores live business data. Backups use private current-user/SYSTEM ACL. Success offers deletion of this exact transaction backup, default keep (including EOF/cancel); no blanket backup clearing. Later restoration of a stale journal is a deliberate manual operation because later remote task ownership must not be forgotten.
+
+`--installation-self-test` is an isolated packaged diagnostic: product/version/schema/ok/checks JSON, imports and bundled audio tool execution only, no data/config writes, backend startup or network. Existing business APIs/config schemas remain unchanged. Instructions: [Setup guide](<docs/SETUP_040.md>).
 
 ## Tests and release
 

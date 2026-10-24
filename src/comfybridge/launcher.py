@@ -318,6 +318,7 @@ def restart_controller(data_dir: Path, *, poll_interval: float = .25) -> int:
 def parse_arguments(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description='ComfyBridge local backend and monitor')
     parser.add_argument('--data-dir', type=Path, default=default_data_dir())
+    parser.add_argument('--installation-self-test', action='store_true', help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest='command')
     for name in ('serve', 'start', 'monitor', 'configure', 'status', 'stop', 'restart', '_restart-controller', 'resolve', 'startup'):
         command = commands.add_parser(name)
@@ -359,7 +360,24 @@ def _configure_stdio() -> None:
 def main(argv: list[str] | None = None) -> int:
     _configure_stdio()
     args = parse_arguments(argv)
-    data_dir = args.data_dir.resolve()
+    if args.installation_self_test:
+        from .install_platform import run_installation_self_test
+        return run_installation_self_test()
+    if not getattr(sys, 'frozen', False):
+        return _run_command(args, args.data_dir.resolve())
+    from .install_platform import SharedLifetimeLeases, InstallPlatformError
+    try:
+        with SharedLifetimeLeases(Path(sys.executable).parent, args.data_dir) as leases:
+            return _run_command(args, leases.data)
+    except InstallPlatformError as error:
+        # Do not inspect business config/control state to guess whether Setup is safe.
+        print('安装或数据目录当前不可用，请完成安装恢复或手动关闭相关程序后重试。 / '
+              'Installation/data unavailable; finish Setup recovery or manually close related programs and retry. '
+              + error.code, file=sys.stderr)
+        return 1
+
+
+def _run_command(args, data_dir: Path) -> int:
     ui = None
     try:
         # Internal/headless protocols must never prompt for language or start a UI.
