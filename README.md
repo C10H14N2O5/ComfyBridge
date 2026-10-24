@@ -91,7 +91,7 @@
 | API Key | 你在向导中设置的同一业务 Key |
 | API Base URL | `http://中间层实际IP:中间层实际端口/v1` |
 | 模型 ID | `IndexTTS-2.5` |
-| voice | `Haze` |
+| voice | `Example` |
 | 超时时间 | 建议实测并设置为大于 模型加载耗时 + 推理 所需的时长 |
 
 **不要把 API Base 填成 ComfyUI 的 8188 端口！**
