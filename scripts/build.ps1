@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$SkipTests, [string]$ReleaseName = ('ComfyBridge-0.3.0-windows-x64-' + (Get-Date -Format 'yyyyMMdd-HHmmss')))
+param([switch]$SkipTests, [string]$ReleaseName = ('ComfyBridge-0.4.0-windows-x64-' + (Get-Date -Format 'yyyyMMdd-HHmmss')), [string]$LegacyRelease = '')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -49,26 +49,30 @@ foreach ($sourceName in 'src','tests','scripts') {
     }
 }
 $buildInfo = @{
-    product='ComfyBridge'; version='0.3.0'; built_at=(Get-Date -Format 'o');
+    product='ComfyBridge'; version='0.4.0'; built_at=(Get-Date -Format 'o');
     uv_lock_sha256=(Get-FileHash -LiteralPath (Join-Path $root 'uv.lock') -Algorithm SHA256).Hash.ToLowerInvariant();
     ffmpeg_archive_sha256='c41df73a3f3259e81d5d53e6ce0c4c80b4841a30894fb77954650e445daa6c53';
-    notes='Unsigned local MVP build. No production API key, user data, reference audio or model weights included.'
+    notes='Unsigned offline installer payload. No production API key, user data, reference audio or model weights included.'
 }
 $buildInfo | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $destination 'BUILD-INFO.json') -Encoding utf8
 & (Join-Path $destination 'ComfyBridge.exe') --help
 if ($LASTEXITCODE -ne 0) { throw 'Packaged CLI smoke failed.' }
 & (Join-Path $bin 'ffmpeg.exe') -version
 if ($LASTEXITCODE -ne 0) { throw 'Packaged audio dependency smoke failed.' }
-& $python (Join-Path $PSScriptRoot 'packaged_smoke.py') $destination
-if ($LASTEXITCODE -ne 0) { throw 'Packaged TCP/SDK/audio/lifecycle smoke failed; no ZIP will be produced.' }
+# Lifecycle leases intentionally persist beside an installed executable. Exercise a
+# private copy so runtime coordination state never enters the release payload.
+$smokePackage = Join-Path $build 'smoke-package'
+Copy-Item -LiteralPath $destination -Destination $smokePackage -Recurse
+& $python (Join-Path $PSScriptRoot 'packaged_smoke.py') $smokePackage
+if ($LASTEXITCODE -ne 0) { throw 'Packaged TCP/SDK/audio/lifecycle smoke failed; no installer will be produced.' }
 Copy-Item -LiteralPath (Join-Path $root 'artifacts\packaged-smoke.json') -Destination (Join-Path $destination 'docs\PACKAGED-SMOKE.json')
 $hashes = foreach ($file in Get-ChildItem -LiteralPath $destination -File -Recurse) {
     $relative = [IO.Path]::GetRelativePath($destination, $file.FullName).Replace('\','/')
     '{0}  {1}' -f (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $relative
 }
 $hashes | Set-Content -LiteralPath (Join-Path $destination 'SHA256SUMS.txt') -Encoding utf8
-$zip = $destination + '.zip'
-Compress-Archive -LiteralPath $destination -DestinationPath $zip -CompressionLevel Optimal
 Write-Output "RELEASE_DIRECTORY=$destination"
-Write-Output "RELEASE_ZIP=$zip"
-Get-FileHash -LiteralPath $zip -Algorithm SHA256
+$setupArgs = @((Join-Path $PSScriptRoot 'build_setup.py'), $destination)
+if ($LegacyRelease) { $setupArgs += @('--legacy-release', (Resolve-Path -LiteralPath $LegacyRelease).Path) }
+& $python @setupArgs
+if ($LASTEXITCODE -ne 0) { throw 'Offline Setup build or installer smoke failed; no final installer will be published.' }

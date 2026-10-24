@@ -176,6 +176,69 @@ def test_restart_is_detached_not_monitor_callback(tmp_path, monkeypatch):
     assert calls == [['_restart-controller', '--data-dir', str(tmp_path.resolve())]]
 
 
+@pytest.mark.parametrize('command', [[], ['start'], ['monitor'], ['configure'], ['serve'], ['_restart-controller'],
+                                     ['status'], ['restart'], ['stop'], ['resolve', 'task-id'], ['startup', 'enable']])
+def test_all_packaged_cli_roles_hold_install_and_data_lifetime_leases(tmp_path, monkeypatch, command):
+    from comfybridge.install_platform import FileLease, InstallPlatformError
+    root, data = tmp_path / 'bundle', tmp_path / 'external-data'
+    root.mkdir()
+    monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(sys, 'executable', str(root / 'ComfyBridge.exe'))
+    called = []
+    def run(args, selected):
+        called.append((args.command, selected))
+        for path in (root / '.comfybridge-install' / 'install.lease', data / '.comfybridge-data.lease'):
+            with pytest.raises(InstallPlatformError, match='install_busy'):
+                with FileLease(path, exclusive=True):
+                    pytest.fail('role lifetime must prevent installer exclusive acquisition')
+        return 7
+    monkeypatch.setattr(launcher, '_run_command', run)
+    assert launcher.main([*command, '--data-dir', str(data)]) == 7
+    assert called == [(command[0] if command else None, data)]
+    with FileLease(root / '.comfybridge-install' / 'install.lease', exclusive=True), FileLease(data / '.comfybridge-data.lease', exclusive=True):
+        pass
+
+
+def test_packaged_incomplete_transaction_blocks_before_config_or_status_read(tmp_path, monkeypatch, capsys):
+    root, data = tmp_path / 'bundle', tmp_path / 'not-created-data'
+    (root / '.comfybridge-install').mkdir(parents=True)
+    (root / '.comfybridge-install' / 'transaction.json').write_text('corrupt')
+    monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(sys, 'executable', str(root / 'ComfyBridge.exe'))
+    monkeypatch.setattr(launcher, 'get_status', lambda _: pytest.fail('status cannot prove installer-safe'))
+    monkeypatch.setattr(launcher, '_run_command', lambda *_: pytest.fail('normal role cannot start'))
+    assert launcher.main(['status', '--data-dir', str(data)]) == 1
+    assert not data.exists()
+    assert 'install_transaction_incomplete' in capsys.readouterr().err
+
+
+def test_installation_selftest_bypasses_marker_data_ui_and_all_leases(tmp_path, monkeypatch, capsys):
+    from comfybridge import install_platform
+    root, data = tmp_path / 'bundle', tmp_path / 'not-created'
+    (root / '.comfybridge-install').mkdir(parents=True)
+    (root / '.comfybridge-install' / 'transaction.json').write_text('in-progress')
+    monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(sys, 'executable', str(root / 'ComfyBridge.exe'))
+    monkeypatch.setattr(install_platform, 'SharedLifetimeLeases', lambda *_: pytest.fail('selftest must bypass leases'))
+    monkeypatch.setattr(launcher, '_run_command', lambda *_: pytest.fail('selftest cannot enter business/UI'))
+    monkeypatch.setattr(install_platform, 'installation_self_test', lambda: {
+        'product': 'ComfyBridge', 'version': '0.4.0', 'schema': 1, 'ok': True,
+        'checks': {'imports': True, 'ffmpeg': True, 'ffprobe': True}})
+    assert launcher.main(['--installation-self-test', '--data-dir', str(data)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['ok'] is True and result['schema'] == 1
+    assert not data.exists() and not (root / '.comfybridge-install' / 'install.lease').exists()
+
+
+def test_source_execution_does_not_add_installation_side_effects(tmp_path, monkeypatch):
+    from comfybridge import install_platform
+    monkeypatch.delattr(sys, 'frozen', raising=False)
+    monkeypatch.setattr(install_platform, 'SharedLifetimeLeases', lambda *_: pytest.fail('source does not acquire packaged lease'))
+    monkeypatch.setattr(launcher, '_run_command', lambda args, data: 0)
+    assert launcher.main(['status', '--data-dir', str(tmp_path / 'data')]) == 0
+    assert list(tmp_path.iterdir()) == []
+
+
 @pytest.mark.skipif(os.environ.get('COMFYBRIDGE_DESKTOP_SMOKE') != '1', reason='explicit opt-in isolated local process smoke')
 def test_real_detached_offline_lifecycle(tmp_path):
     """No generation: target is our bound-but-not-listening loopback socket."""

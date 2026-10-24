@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import asyncio
+from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -84,6 +85,22 @@ def wait_for(predicate, timeout=12):
             return
         time.sleep(.05)
     raise AssertionError('packaged_condition_timed_out')
+
+
+def wait_leases_released(release, data_dir):
+    """Control identity removal precedes process exit; don't delete a live lease."""
+    from comfybridge.install_platform import FileLease, InstallPlatformError
+    def released():
+        try:
+            with ExitStack() as stack:
+                for path in (release / '.comfybridge-install/install.lease', data_dir / '.comfybridge-data.lease'):
+                    if not path.is_file():
+                        return False
+                    stack.enter_context(FileLease(path, exclusive=True, create=False))
+                return True
+        except (InstallPlatformError, OSError):
+            return False
+    wait_for(released)
 
 
 def main():
@@ -208,6 +225,7 @@ def main():
                                      capture_output=True, timeout=10)
             assert stopped.returncode == 0
             wait_for(lambda: get_status(data_dir) is None)
+            wait_leases_released(release, data_dir)
             document = config.model_dump(mode='json')
             document['models'][0]['idle_release']['method'] = 'free'
             config = AppConfig.model_validate(document)
@@ -240,6 +258,8 @@ def main():
                 report['backend_stopped'] = get_status(data_dir) is None
                 if not report['backend_stopped']:
                     raise RuntimeError('packaged_backend_did_not_stop')
+                wait_leases_released(release, data_dir)
+                report['backend_lifetime_leases_released'] = True
             remote.shutdown()
             remote.server_close()
             thread.join(timeout=5)
