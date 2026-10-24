@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z", re.ASCII)
 PositiveInt = Annotated[int, Field(gt=0)]
@@ -180,10 +180,43 @@ class LoggingConfig(StrictModel):
     backup_count: int = Field(default=5, ge=0)
 
 
+class IdleReleaseConfig(StrictModel):
+    seconds: int = Field(default=300, ge=1, le=86400)
+    method: Literal["free", "workflow"]
+    text: str = Field(default="好。", min_length=1, max_length=64)
+
+    @field_validator("text")
+    @classmethod
+    def valid_cleanup_text(cls, value):
+        if (not value.strip() or any(0xD800 <= ord(char) <= 0xDFFF
+                or (ord(char) < 32 and char not in "\t\r\n")
+                or 0x7F <= ord(char) <= 0x9F for char in value)):
+            raise ValueError("invalid_idle_release_text")
+        return value
+
+
 class ModelConfig(StrictModel):
     id: str
-    cache_policy: Literal["inherit", "keep", "release"] = "inherit"
+    cache_policy: Literal["inherit", "keep", "release", "idle_release"] = "inherit"
+    idle_release: IdleReleaseConfig | None = None
     _id = field_validator("id")(validate_identifier)
+
+    @model_validator(mode="after")
+    def consistent_idle_release(self):
+        if self.cache_policy == "idle_release" and self.idle_release is None:
+            raise ValueError("idle_release_settings_required")
+        if self.cache_policy != "idle_release" and self.idle_release is not None:
+            raise ValueError("idle_release_settings_not_applicable")
+        return self
+
+    @model_serializer(mode="wrap")
+    def legacy_compatible_dump(self, handler):
+        # The 0.2 model schema forbids extra fields. Switching back to an old
+        # policy must restore its exact representation, not emit a new null key.
+        result = handler(self)
+        if self.idle_release is None:
+            result.pop("idle_release", None)
+        return result
 
 
 class PresetConfig(StrictModel):
@@ -238,7 +271,12 @@ class AppConfig(StrictModel):
                 raise ValueError("duplicate_preset")
             if preset.model not in models:
                 raise ValueError("unknown_preset_model")
-            if models[preset.model].cache_policy != "inherit" and preset.cache_binding is None:
+            model = models[preset.model]
+            needs_cache_binding = model.cache_policy in ("keep", "release") or (
+                model.cache_policy == "idle_release" and model.idle_release is not None
+                and model.idle_release.method == "workflow"
+            )
+            if needs_cache_binding and preset.cache_binding is None:
                 raise ValueError("cache_binding_required")
             routes.add(route)
             ids.add(preset.id)

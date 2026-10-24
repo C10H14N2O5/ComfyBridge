@@ -115,6 +115,45 @@ MESSAGES = {
     'field_elapsed_seconds': ('耗时秒', 'elapsed seconds'), 'field_queue_seconds': ('排队秒', 'queue seconds'),
     'field_generation_seconds': ('生成秒', 'generation seconds'), 'field_count': ('数量', 'count'),
     'field_pid': ('进程号', 'PID'), 'field_code': ('代码', 'code'), 'field_state': ('状态', 'state'),
+    'cache_title': ('模型空闲缓存清理：', 'Model idle-cache cleanup:'),
+    'cache_row': ('  {model}{voice}：{method}；等待 {seconds} 秒；剩余 {remaining} 秒', '  {model}{voice}: {method}; idle timeout {seconds}s; remaining {remaining}s'),
+    'cache_voice': (' / 最近音色 {voice}', ' / last voice {voice}'),
+    'cache_detail': ('    状态：{state}{reason}', '    State: {state}{reason}'),
+    'cache_method_free': ('/free 实例级卸载请求', '/free instance-wide unload request'),
+    'cache_method_workflow': ('工作流 GPU 清理任务', 'workflow GPU cleanup task'),
+    'cache_state_pending_idle': ('等待本地任务空闲', 'waiting for local work to become idle'),
+    'cache_state_countdown': ('空闲倒计时', 'idle countdown'),
+    'cache_state_waiting_remote': ('等待远端队列为空（无法锁定其他客户端）', 'waiting for an empty remote queue (other clients cannot be locked)'),
+    'cache_state_releasing': ('清理请求或任务进行中', 'cleanup request or task in progress'),
+    'cache_state_requested': ('请求已受理（不证明显存已释放）', 'request accepted (does not prove VRAM was freed)'),
+    'cache_state_completed': ('清理工作流已完成（不证明显存已释放）', 'cleanup workflow completed (does not prove VRAM was freed)'),
+    'cache_state_failed': ('清理失败', 'cleanup failed'),
+    'cache_state_uncertain': ('清理结果不确定（不会盲目重发）', 'cleanup outcome uncertain (not blindly retried)'),
+    'cache_state_stale': ('配置或模板已变化；等待新的业务生成建立匹配的清理计划，不会仅靠自动探测恢复', 'configuration or template changed; waiting for a new business generation to establish a matching cleanup plan, not automatic probe recovery'),
+    'code_cache_remote_busy': ('远端队列仍有任务', 'remote queue still contains work'),
+    'code_cache_remote_unavailable': ('无法核对远端队列', 'remote queue could not be checked'),
+    'code_cache_config_stale': ('配置或模板已变化', 'configuration or template has changed'),
+    'code_cache_build_failed': ('无法构建清理工作流', 'cleanup workflow could not be built'),
+    'code_cache_seed_exhausted': ('持久化清理种子序列已耗尽或无效，未提交清理任务', 'durable cleanup seed sequence exhausted or invalid; no cleanup task submitted'),
+    'code_cache_free_uncertain': ('/free 请求结果不确定', '/free request outcome uncertain'),
+    'code_cache_release_uncertain': ('缓存清理结果不确定', 'cache cleanup outcome uncertain'),
+    'code_cache_free_failed': ('/free 请求失败', '/free request failed'),
+    'code_cache_cleanup_failed': ('清理工作流失败', 'cleanup workflow failed'),
+    'code_cache_deadline_exceeded': ('清理任务超过时限', 'cleanup task deadline exceeded'),
+    'code_cache_not_active': ('清理任务已确认不再活动', 'cleanup task confirmed no longer active'),
+    'code_cache_admin_resolved': ('管理员已确认清理任务状态', 'cleanup task acknowledged by administrator'),
+    'code_workflow_idle_release_settings': ('工作流定时丢弃设置不一致', 'workflow idle-release settings are inconsistent'),
+    'code_cache_cleanup_unsupported': ('此模板不支持工作流清理', 'this template does not support workflow cleanup'),
+    'code_cache_cleanup_seed_binding': ('清理 seed 必须是有效整数常量或省略', 'cleanup seed must be a valid literal integer or omitted'),
+    'code_cache_cleanup_seed_invalid': ('清理种子无效或已耗尽', 'cleanup seed invalid or exhausted'),
+    'code_cache_cleanup_text': ('清理任务文本无效', 'cleanup task text invalid'),
+    'code_cache_cleanup_seed_schema': ('远端缺少兼容的 INT seed 输入', 'remote node lacks a compatible INT seed input'),
+    'code_cache_cleanup_seed_range': ('远端 seed 不支持完整 32 位范围', 'remote seed does not support the complete 32-bit range'),
+    'event_cache_release_intent': ('已记录缓存清理提交意图', 'Cache cleanup submission intent recorded'),
+    'event_cache_release_requested': ('缓存清理请求已受理（不证明显存已释放）', 'Cache cleanup request accepted (not proof of freed VRAM)'),
+    'event_cache_release_completed': ('缓存清理工作流已完成（不证明显存已释放）', 'Cache cleanup workflow completed (not proof of freed VRAM)'),
+    'event_cache_release_failed': ('缓存清理失败', 'Cache cleanup failed'),
+    'event_cache_release_uncertain': ('缓存清理结果不确定', 'Cache cleanup outcome uncertain'),
 }
 
 
@@ -140,6 +179,59 @@ def _count(value) -> str:
 
 def _label(value) -> str:
     return safe_text(value, max_length=128) if isinstance(value, str) else '—'
+
+
+_CACHE_STATES = frozenset({'pending_idle', 'countdown', 'waiting_remote', 'releasing', 'requested',
+                           'completed', 'failed', 'uncertain', 'stale'})
+_CACHE_ERRORS = frozenset({'cache_remote_busy', 'cache_remote_unavailable', 'cache_config_stale',
+                          'cache_build_failed', 'cache_free_uncertain', 'cache_free_failed',
+                          'cache_cleanup_failed', 'cache_deadline_exceeded', 'cache_not_active', 'cache_admin_resolved',
+                          'cache_release_uncertain', 'submission_uncertain', 'cache_seed_exhausted'})
+_CACHE_EVENTS = frozenset({'cache_release_intent', 'cache_release_requested', 'cache_release_completed',
+                          'cache_release_failed', 'cache_release_uncertain'})
+_IDENTIFIER = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z', re.ASCII)
+
+
+def _cache_value(value, ui, prefix: str, allowed) -> str:
+    if not isinstance(value, str) or value not in allowed:
+        return ui.t(MESSAGES, 'unknown')
+    return ui.t(MESSAGES, prefix + '_' + value)
+
+
+def _cache_identifier(value) -> str:
+    return value if isinstance(value, str) and _IDENTIFIER.fullmatch(value) else '—'
+
+
+def format_cache_status(rows, ui: UIContext) -> list[str]:
+    """Closed schema: never echo text, arbitrary error/state/method strings or dicts."""
+    if not isinstance(rows, list) or not rows:
+        return []
+    lines = [ui.t(MESSAGES, 'cache_title')]
+    for row in rows[:20]:
+        if not isinstance(row, dict):
+            continue
+        method = row.get('method')
+        method_text = _cache_value(method, ui, 'cache_method', ('free', 'workflow'))
+        seconds = row.get('seconds')
+        seconds = str(seconds) if type(seconds) is int and 1 <= seconds <= 86400 else '—'
+        remaining = row.get('remaining_seconds')
+        remaining = f'{remaining:.1f}' if type(remaining) in (int, float) and 0 <= remaining <= 86400 else '—'
+        voice = _cache_identifier(row.get('voice'))
+        lines.append(ui.t(MESSAGES, 'cache_row', model=_cache_identifier(row.get('model')),
+                          voice=ui.t(MESSAGES, 'cache_voice', voice=voice) if voice != '—' else '',
+                          method=method_text, seconds=seconds, remaining=remaining))
+        state = row.get('state')
+        if state == 'completed':
+            # /free only acknowledges an instance-wide request. Even a malformed
+            # completed state must never upgrade that to confirmed unloading.
+            state = 'requested' if method == 'free' else ('completed' if method == 'workflow' else None)
+        state_text = _cache_value(state, ui, 'cache_state', _CACHE_STATES)
+        error = row.get('error_code')
+        reason = ui.t(MESSAGES, 'reasons', value=_cache_value(error, ui, 'code', _CACHE_ERRORS)) if error is not None else ''
+        lines.append(ui.t(MESSAGES, 'cache_detail', state=state_text, reason=reason))
+    if len(rows) > 20:
+        lines.append(ui.t(MESSAGES, 'more', count=len(rows) - 20))
+    return lines
 
 
 def format_status(status: dict | None, ui: UIContext) -> list[str]:
@@ -180,6 +272,7 @@ def format_status(status: dict | None, ui: UIContext) -> list[str]:
                               reasons=ui.t(MESSAGES, 'reasons', value=reasons) if reasons else ''))
         if len(presets) > 20:
             lines.append(ui.t(MESSAGES, 'more', count=len(presets) - 20))
+    lines.extend(format_cache_status(backend.get('cache'), ui))
     unresolved = backend.get('unresolved')
     if isinstance(unresolved, list):
         lines.append(ui.t(MESSAGES, 'unresolved', count=len(unresolved)))
@@ -206,6 +299,9 @@ def format_log_line(line: str, ui: UIContext) -> str:
             raise ValueError()
     except ValueError:
         return ui.t(MESSAGES, 'log_omitted')
+    cache_event = record['event'] in _CACHE_EVENTS
+    if record['event'].startswith('cache_') and not cache_event:
+        return ui.t(MESSAGES, 'log_omitted')
     parts = []
     timestamp = record.get('time')
     if isinstance(timestamp, str) and re.fullmatch(r'[0-9TZ:+. -]{1,40}', timestamp):
@@ -219,7 +315,10 @@ def format_log_line(line: str, ui: UIContext) -> str:
         value = record.get(field)
         if value is None:
             continue
-        if field in ('code', 'state'):
+        if cache_event and field in ('code', 'state'):
+            value = _cache_value(value, ui, 'code' if field == 'code' else 'cache_state',
+                                 _CACHE_ERRORS if field == 'code' else _CACHE_STATES)
+        elif field in ('code', 'state'):
             value = _localized_code(value, ui, field)
         elif type(value) in (int, float) and -10**12 <= value <= 10**12:
             value = str(value)

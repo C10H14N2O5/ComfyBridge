@@ -12,6 +12,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from .audio import AudioError, AudioProcessor, AudioResult
+from .cache_scheduler import CacheScheduler
 from .comfy_client import ComfyClient, ComfyError, SubmissionUncertain, SubmissionRejected
 from .config import AppConfig
 from .journal import Journal, TERMINAL
@@ -45,7 +46,7 @@ class _Work:
 
 class BridgeService:
     def __init__(self, config: AppConfig, data_dir: Path, *, audio_processor=None,
-                 client=None, client_factory=None, presets=None, journal=None):
+                 client=None, client_factory=None, presets=None, journal=None, clock=None, wall_clock=None):
         self.config = config.model_copy(deep=True)
         self.data_dir = Path(data_dir)
         self.presets = load_presets(self.config, self.data_dir) if presets is None else presets
@@ -72,6 +73,7 @@ class BridgeService:
         self._maintenance = None
         self._wake = asyncio.Event()
         self._config_version = hashlib.sha256(self.config.model_dump_json(exclude={"server": {"api_key"}}).encode()).hexdigest()
+        self.cache = CacheScheduler(self, clock=clock, wall_clock=wall_clock)
 
     def _client(self, url: str):
         url = url.rstrip("/")
@@ -79,10 +81,10 @@ class BridgeService:
             self._clients[url] = self._client_factory(url)
         return self._clients[url]
 
-    def _blocked(self, url: str | None = None) -> bool:
+    def _blocked(self, url: str | None = None, *, business_only: bool = False) -> bool:
         target = (url or self.config.comfyui.base_url).rstrip("/")
         return any(row["backend_url"].rstrip("/") == target and row["state"] in {"intent", "uncertain"}
-                   for row in self.journal.unresolved())
+                   and (not business_only or row["purpose"] == "speech") for row in self.journal.unresolved())
 
     async def start(self):
         if self._started:
@@ -92,9 +94,11 @@ class BridgeService:
         # Only UUID directories actually recorded in this ledger are owned.
         for task_id in self.journal.known_task_ids():
             self._cleanup_directory(self.data_dir / "tmp" / ("cb-" + task_id))
+        self.cache.recover()
         for row in self.journal.unresolved():
             state = "uncertain" if row["state"] == "intent" else row["state"]
-            row = self.journal.update(row["task_id"], state=state, client_state="abandoned", absent_count=0)
+            client_state = row["client_state"] if row["purpose"] == "cache_cleanup" else "abandoned"
+            row = self.journal.update(row["task_id"], state=state, client_state=client_state, absent_count=0)
             self._slots += 1
             self._remote[row["task_id"]] = None
             self._spawn(self._follow(row["task_id"], None))
@@ -151,8 +155,10 @@ class BridgeService:
                 if time.monotonic() >= next_probe:
                     await self._probe()
                     self.journal.prune(protected_ids=set(self._remote) | set(self._delivered_results))
+                    self.cache.prune_retired()
                     next_probe = time.monotonic() + self.config.limits.probe_interval
                     self._dispatch()
+                self.cache.tick()
                 self._wake.clear()
                 try:
                     await asyncio.wait_for(self._wake.wait(), timeout=min(self.config.limits.poll_interval, max(0.01, next_probe - time.monotonic())))
@@ -162,6 +168,8 @@ class BridgeService:
             pass
 
     def _dispatch(self):
+        if self.cache.busy:
+            return
         while self._queue and self._slots < self.config.limits.max_inflight:
             work = self._queue[0]
             if work.abandoned or work.future.done():
@@ -185,10 +193,11 @@ class BridgeService:
             "draining": self._draining, "inflight": len(self._remote), "slots": self._slots,
             "waiting": sum(not work.abandoned and not work.future.done() for work in self._queue),
             "delivery": self._delivery, "live_requests": len(self._live),
+            "cache": self.cache.status(),
             "presets": [{"model": key[0], "voice": key[1], "ready": self._online and not codes,
                          "reasons": list(codes)} for key, codes in self._ready.items()],
             "unresolved": [{"task_id": row["task_id"], "request_id": row["request_id"], "state": row["state"],
-                            "client_state": row["client_state"], "error_code": row["error_code"]} for row in rows],
+                            "client_state": row["client_state"], "error_code": row["error_code"], "purpose": row["purpose"]} for row in rows],
         }
 
     def begin_drain(self):
@@ -215,13 +224,16 @@ class BridgeService:
         loaded = self.presets.get((request.model, request.voice))
         if loaded is None:
             raise BridgeError("unknown_preset", 400, param="voice")
-        if self._blocked():
+        if self._blocked(business_only=True):
             raise BridgeError("unresolved_submission", 503, submitted=True)
         if not self._online or self._ready.get((request.model, request.voice)):
             raise BridgeError("preset_unready", 503)
         waiting = sum(not w.abandoned and not w.future.done() for w in self._queue)
-        if self._slots + waiting >= self.config.limits.max_inflight + self.config.limits.max_queue:
+        effective_slots = self._slots - (1 if self.cache.preflight else 0)
+        if ((self.cache.busy and not self.cache.preflight and waiting >= self.config.limits.max_queue)
+                or effective_slots + waiting >= self.config.limits.max_inflight + self.config.limits.max_queue):
             raise BridgeError("capacity_exceeded", 429)
+        self.cache.activity()
         future = asyncio.get_running_loop().create_future()
         deadline = getattr(request, "_deadline", None) or time.monotonic() + self.config.limits.request_timeout
         work = _Work(request, request_id, deadline, future, loaded, sequence=self._sequence)
@@ -310,7 +322,7 @@ class BridgeService:
                 return
             # Reserved local workers may have been scheduled before an earlier POST
             # became uncertain. Recheck at the actual submission boundary.
-            if self._blocked() or not self._online or self._ready.get((work.request.model, work.request.voice)):
+            if self.cache.busy or self._blocked() or not self._online or self._ready.get((work.request.model, work.request.voice)):
                 self._queue = deque(sorted((*self._queue, work), key=lambda item: item.sequence))
                 self._release(work)
                 return
@@ -319,7 +331,9 @@ class BridgeService:
             row = self.journal.intent(task_id=task_id, request_id=work.request_id,
                                       backend_url=self.config.comfyui.base_url,
                                       template_version=work.preset.preset.sha256,
-                                      config_version=self._config_version)
+                                      config_version=self._config_version, model=work.request.model,
+                                      voice=work.request.voice, preset_id=getattr(work.preset.preset, "id", None),
+                                      cache_use=self.cache.metadata(work.preset))
             work.task_id = task_id
             self._remote[task_id] = work
             event("submission_intent", prompt_id=task_id, request_id=work.request_id,
@@ -361,6 +375,7 @@ class BridgeService:
                 row = self.journal.get(task_id)
                 if row["state"] in TERMINAL:
                     break
+                row = self.cache.expire(row)
                 if work is not None and not work.abandoned and time.monotonic() >= work.deadline:
                     self._abandon(work, "deadline_exceeded", 504)
                 client = self._client(row["backend_url"])
@@ -391,7 +406,8 @@ class BridgeService:
                         break
                     if observed.state in {"pending", "running"}:
                         row = self.journal.update(task_id, state=observed.state, admitted=1, absent_count=0, error_code=None)
-                        if observed.state == "pending" and (work is None or work.abandoned):
+                        cancel_pending = bool(row["expired"]) if row["purpose"] == "cache_cleanup" else (work is None or work.abandoned)
+                        if observed.state == "pending" and cancel_pending:
                             self.journal.update(task_id, delete_requested=1, absent_count=0)
                             event("pending_delete_requested", prompt_id=row["remote_id"])
                             await client.delete_pending(row["remote_id"])
@@ -422,6 +438,7 @@ class BridgeService:
             # Only terminal evidence or admin acknowledgment releases remote capacity.
             if self.journal.get(task_id)["state"] in TERMINAL:
                 self._remote.pop(task_id, None)
+                self.cache.finished(task_id)
                 if work is None or work.result is None:
                     self._release(work)
                 if work is not None and not work.future.done():

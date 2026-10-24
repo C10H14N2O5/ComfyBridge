@@ -250,3 +250,37 @@ def test_script_start_does_not_prompt_language(tmp_path, monkeypatch):
     assert launcher.main(['start', '--data-dir', str(tmp_path)]) == 0
     assert len(starts) == 1
     assert (tmp_path / 'ui.json').read_text() == '{broken'
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+@pytest.mark.parametrize('method', ['free', 'workflow'])
+def test_home_idle_cache_summary_shows_settings_without_cleanup_text(tmp_path, monkeypatch, language, method):
+    config = settings(tmp_path).model_dump(mode='json')
+    config['models'] = [{'id': 'idle-model', 'cache_policy': 'idle_release',
+                         'idle_release': {'seconds': 123, 'method': method, 'text': 'PRIVATE-CLEANUP-TEXT'}}]
+    save_config(tmp_path, AppConfig.model_validate(config))
+    instance, output = home(tmp_path, monkeypatch, language=language)
+    instance.summary()
+    text = '\n'.join(output)
+    assert 'idle-model' in text and '123' in text
+    assert instance.t('idle_' + method) in text
+    assert instance.t('idle_not_vram_proof') in text
+    assert 'PRIVATE-CLEANUP-TEXT' not in text
+    assert 'never-print-this-business-key' not in text
+    assert '"idle_release"' not in text
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+def test_actual_idle_editor_save_requires_separate_default_cancel_restart(tmp_path, monkeypatch, language):
+    settings(tmp_path)
+    status = {'config_digest': 'old-running-config'}
+    answers = ['2', 'm', '4', '300', '1', '1', 's', '1', '']
+    instance, output = home(tmp_path, monkeypatch, answers, language=language, status=status)
+    monkeypatch.setattr('comfybridge.control.get_status', lambda _: status)
+    monkeypatch.setattr(launcher, 'request_restart', lambda *_a: pytest.fail('save cannot silently restart'))
+    monkeypatch.setattr(launcher, 'ensure_backend', lambda *_a: pytest.fail('save cannot silently start'))
+    instance.edit('models')
+    saved = load_config(tmp_path)
+    assert saved.models[0].idle_release.method == 'free'
+    assert saved.models[0].idle_release.seconds == 300
+    assert instance.t('apply_restart') in output

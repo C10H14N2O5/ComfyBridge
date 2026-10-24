@@ -389,3 +389,134 @@ def test_refresh_uses_shared_language_context_without_stale_messages(tmp_path, m
     assert 'ComfyBridge Monitor' in lines
     assert 'ComfyBridge 实时监控' in lines
     assert '后台已启动或已连接。' in lines
+
+
+def cache_row(**changes):
+    return {'model': 'model-id', 'method': 'workflow', 'seconds': 300, 'remaining_seconds': 25.5,
+            'state': 'countdown', 'error_code': None, 'voice': 'last-voice', **changes}
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+@pytest.mark.parametrize('state', ['pending_idle', 'countdown', 'waiting_remote', 'releasing',
+                                   'requested', 'completed', 'failed', 'uncertain', 'stale'])
+def test_idle_cache_states_are_localized_recognized_metadata(language, state):
+    ui = UIContext(language)
+    status = {'ready': True, 'cache': [cache_row(state=state)]}
+    text = '\n'.join(module.format_status(status, ui))
+    assert ui.t(module.MESSAGES, 'cache_state_' + state) in text
+    assert 'model-id' in text and 'last-voice' in text and '25.5' in text and '300' in text
+    assert ui.t(module.MESSAGES, 'cache_method_workflow') in text
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+@pytest.mark.parametrize('state', ['requested', 'completed'])
+def test_free_acceptance_never_claims_confirmed_unload_or_workflow_completion(language, state):
+    ui = UIContext(language)
+    text = '\n'.join(module.format_cache_status([cache_row(method='free', state=state, remaining_seconds=None)], ui))
+    assert ui.t(module.MESSAGES, 'cache_state_requested') in text
+    assert ui.t(module.MESSAGES, 'cache_state_completed') not in text
+    assert ('不证明显存已释放' if language == 'zh-CN' else 'does not prove VRAM was freed') in text
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+def test_cache_status_unknown_fields_codes_and_shapes_never_echo_private_text(language):
+    ui = UIContext(language)
+    rows = [cache_row(method='PRIVATE-METHOD', state='synthetic_private_state', error_code='synthetic_private_error',
+                      seconds='PRIVATE-SECONDS', remaining_seconds='PRIVATE-REMAINING',
+                      text='PRIVATE-TEXT', token='PRIVATE-TOKEN', graph={'text': 'PRIVATE-GRAPH'}),
+            cache_row(model={'secret': 'PRIVATE-MODEL'}, voice=['PRIVATE-VOICE'], method={'secret': 'PRIVATE-METHOD'},
+                      state={'secret': 'PRIVATE-STATE'}, error_code={'secret': 'PRIVATE-ERROR'})]
+    text = '\n'.join(module.format_cache_status(rows, ui))
+    assert 'PRIVATE' not in text and 'synthetic_private' not in text
+    assert ui.t(module.MESSAGES, 'unknown') in text
+    assert 'model-id' in text  # only known metadata identifiers survive
+
+
+@pytest.mark.parametrize('remaining', [float('nan'), float('inf'), -1, True, 86401, {}, '123'])
+def test_cache_remaining_seconds_requires_finite_bounded_numeric_value(remaining):
+    text = '\n'.join(module.format_cache_status([cache_row(remaining_seconds=remaining)], UIContext()))
+    assert 'remaining —s' in text
+
+
+@pytest.mark.parametrize('seconds', [0, -1, 86401, True, 1.5, {}, '300'])
+def test_cache_timeout_requires_strict_bounded_integer(seconds):
+    text = '\n'.join(module.format_cache_status([cache_row(seconds=seconds)], UIContext()))
+    assert 'idle timeout —s' in text
+
+
+def test_cache_countdown_accepts_boundary_values_and_bounds_rows():
+    rows = [cache_row(seconds=86400, remaining_seconds=0)] * 25
+    text = '\n'.join(module.format_cache_status(rows, UIContext()))
+    assert text.count('model-id') == 20
+    assert '5 more entries' in text
+    assert 'remaining 0.0s' in text
+    assert module.format_cache_status(None, UIContext()) == []
+    assert module.format_cache_status({'text': 'private'}, UIContext()) == []
+    assert module.format_cache_status([], UIContext()) == []
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+@pytest.mark.parametrize('code', ['cache_remote_busy', 'cache_remote_unavailable', 'cache_config_stale',
+                                 'cache_build_failed', 'cache_free_uncertain', 'cache_free_failed',
+                                 'cache_cleanup_failed', 'cache_deadline_exceeded', 'cache_not_active',
+                                 'cache_admin_resolved', 'cache_release_uncertain', 'submission_uncertain', 'cache_seed_exhausted'])
+def test_cache_error_codes_are_localized_without_raw_responses(language, code):
+    ui = UIContext(language)
+    text = '\n'.join(module.format_cache_status([cache_row(error_code=code)], ui))
+    assert ui.t(module.MESSAGES, 'code_' + code) in text
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+@pytest.mark.parametrize('event', ['cache_release_intent', 'cache_release_requested', 'cache_release_completed',
+                                  'cache_release_failed', 'cache_release_uncertain'])
+def test_cache_log_events_are_safe_and_localized(language, event):
+    ui = UIContext(language)
+    raw = json.dumps({'event': event, 'level': 'INFO', 'model': 'm', 'prompt_id': 'uuid',
+                      'state': 'uncertain', 'code': 'cache_free_uncertain', 'count': 1,
+                      'text': 'PRIVATE-CLEANUP', 'input': 'PRIVATE-TEXT', 'message': 'PRIVATE-EXCEPTION',
+                      'token': 'PRIVATE-TOKEN', 'graph': {'text': 'PRIVATE-GRAPH'}})
+    text = module.format_log_line(raw, ui)
+    assert ui.t(module.MESSAGES, 'event_' + event) in text
+    assert 'PRIVATE' not in text
+    assert ui.t(module.MESSAGES, 'cache_state_uncertain') in text
+
+
+def test_cache_unknown_log_event_state_error_never_echoed():
+    ui = UIContext()
+    assert module.format_log_line('{"event":"cache_synthetic_private_token"}', ui) == ui.t(module.MESSAGES, 'log_omitted')
+    text = module.format_log_line(json.dumps({'event': 'cache_release_failed',
+                                            'state': 'synthetic_private_state', 'code': 'synthetic_private_error'}), ui)
+    assert 'synthetic_private' not in text
+    assert 'unknown' in text
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+def test_monitor_cache_display_does_not_trigger_release_or_change_lifecycle(tmp_path, monkeypatch, language):
+    monkeypatch.setattr(module, 'monitor_snapshot', lambda _: {'backend': {'ready': True, 'cache': [cache_row()]}})
+    for name in ('ensure_backend', 'request_stop', 'request_restart'):
+        monkeypatch.setattr('comfybridge.launcher.' + name, lambda *_a, **_k: pytest.fail('status rendering must be read-only'))
+    lines = []
+    assert module.monitor(tmp_path, ui=UIContext(language), key_reader=lambda: 'q', output=lines.append) == 0
+    assert any('model-id' in line for line in lines)
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+def test_stale_cache_waits_for_new_business_generation_not_probe_recovery(language):
+    text = '\n'.join(module.format_cache_status([cache_row(state='stale', remaining_seconds=None)], UIContext(language)))
+    assert ('等待新的业务生成' if language == 'zh-CN' else 'waiting for a new business generation') in text
+    assert ('不会仅靠自动探测恢复' if language == 'zh-CN' else 'not automatic probe recovery') in text
+    assert '等待后台核对配置' not in text
+    assert 'awaiting backend configuration checks' not in text
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+def test_durable_seed_failure_status_and_log_are_allowlisted(language):
+    ui = UIContext(language)
+    expected = ui.t(module.MESSAGES, 'code_cache_seed_exhausted')
+    status = '\n'.join(module.format_cache_status([cache_row(state='failed', error_code='cache_seed_exhausted')], ui))
+    log = module.format_log_line(json.dumps({'event': 'cache_release_failed', 'state': 'failed',
+                                           'code': 'cache_seed_exhausted', 'seed': 'PRIVATE-COUNTER'}), ui)
+    assert expected in status and expected in log
+    assert ('未提交清理任务' if language == 'zh-CN' else 'no cleanup task submitted') in expected
+    assert ('或无效' if language == 'zh-CN' else 'or invalid') in expected
+    assert 'PRIVATE-COUNTER' not in log

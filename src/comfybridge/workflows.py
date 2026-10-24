@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from .config import (AppConfig, PresetConfig, confined_path, parse_json_strict,
+from .config import (AppConfig, IdleReleaseConfig, PresetConfig, confined_path, parse_json_strict,
                      validate_identifier, validate_template_path, _staged_file)
+
+MAX_CLEANUP_SEED = 4294967295
 
 
 class WorkflowError(ValueError):
@@ -137,23 +139,68 @@ class LoadedPreset:
     preset: PresetConfig
     graph: dict
     cache_policy: str
+    idle_release: IdleReleaseConfig | None = None
 
     def build_prompt(self, text: str) -> dict:
         if type(text) is not str:
             raise WorkflowError("workflow_text_type")
+        if self.cache_policy == "idle_release" and not isinstance(self.idle_release, IdleReleaseConfig):
+            raise WorkflowError("workflow_idle_release_settings")
         selected = _ancestors(self.graph, self.preset.audio_output_node)
         result = {node_id: deepcopy(node) for node_id, node in self.graph.items() if node_id in selected}
         binding = self.preset.text_binding
         result[binding.node_id]["inputs"][binding.field] = text
         if self.cache_policy != "inherit":
             binding = self.preset.cache_binding
-            if binding is None or self.cache_policy not in ("keep", "release"):
+            if (self.cache_policy == "idle_release" and self.idle_release.method == "free"
+                    and binding is None):
+                return result  # No invented cache node/binding for a global /free policy.
+            if binding is None or self.cache_policy not in ("keep", "release", "idle_release"):
                 raise WorkflowError("workflow_cache_binding")
-            result[binding.node_id]["inputs"][binding.field] = self.cache_policy == "keep"
+            result[binding.node_id]["inputs"][binding.field] = self.cache_policy in ("keep", "idle_release")
+        return result
+
+    def build_cleanup_prompt(self, text: str, seed: int) -> dict:
+        """Build an opt-in cleanup graph only; never execute or advance a seed here.
+
+        The backend owns durable seed allocation. Zero is reserved so a sequence
+        cannot silently wrap after 4294967295 and reuse a previous cleanup prompt.
+        """
+        if (self.cache_policy != "idle_release" or self.idle_release is None
+                or self.idle_release.method != "workflow"):
+            raise WorkflowError("cache_cleanup_unsupported")
+        if type(seed) is not int or not 1 <= seed <= MAX_CLEANUP_SEED:
+            raise WorkflowError("cache_cleanup_seed_invalid")
+        try:
+            text = IdleReleaseConfig(method="workflow", text=text).text
+        except ValueError:
+            raise WorkflowError("cache_cleanup_text") from None
+        _validate_graph(self.graph)
+        _validate_bindings(self.preset, self.graph, self.cache_policy, self.idle_release)
+        result = self.build_prompt(text)
+        binding = self.preset.cache_binding
+        result[binding.node_id]["inputs"][binding.field] = False
+        result[self.preset.text_binding.node_id]["inputs"]["seed"] = seed
         return result
 
 
-def _validate_bindings(preset: PresetConfig, graph: dict, policy: str) -> None:
+def _validate_cleanup_binding(preset: PresetConfig, graph: dict) -> None:
+    binding = preset.text_binding
+    node = graph[binding.node_id]
+    if node["class_type"] != "IndexTTS25BaseNode" or binding.field != "text":
+        raise WorkflowError("cache_cleanup_unsupported")
+    if "seed" in node["inputs"]:
+        seed = node["inputs"]["seed"]
+        if type(seed) is not int or not 0 <= seed <= MAX_CLEANUP_SEED:
+            raise WorkflowError("cache_cleanup_seed_binding")
+
+
+def _validate_bindings(preset: PresetConfig, graph: dict, policy: str,
+                       idle_release: IdleReleaseConfig | None = None) -> None:
+    if policy == "idle_release" and not isinstance(idle_release, IdleReleaseConfig):
+        raise WorkflowError("workflow_idle_release_settings")
+    if policy != "idle_release" and idle_release is not None:
+        raise WorkflowError("workflow_idle_release_settings")
     selected = _ancestors(graph, preset.audio_output_node)
     binding = preset.text_binding
     if (binding.node_id not in selected or binding.node_id == preset.audio_output_node
@@ -166,7 +213,10 @@ def _validate_bindings(preset: PresetConfig, graph: dict, policy: str) -> None:
     if binding.node_id not in _ancestors(graph, output["inputs"]["audio"][0]):
         raise WorkflowError("workflow_text_binding")
     cache = preset.cache_binding
-    if policy != "inherit" and cache is None:
+    needs_cache = policy in ("keep", "release") or (
+        policy == "idle_release" and idle_release.method == "workflow"
+    )
+    if needs_cache and cache is None:
         raise WorkflowError("workflow_cache_binding")
     if cache is not None:
         if (cache.node_id not in _ancestors(graph, binding.node_id)
@@ -177,6 +227,8 @@ def _validate_bindings(preset: PresetConfig, graph: dict, policy: str) -> None:
         # This cache node must actually feed a synthesis cache_control input, slot zero.
         if graph[binding.node_id]["inputs"].get("cache_control") != [cache.node_id, 0]:
             raise WorkflowError("workflow_cache_binding")
+    if policy == "idle_release" and idle_release.method == "workflow":
+        _validate_cleanup_binding(preset, graph)
 
 
 def load_presets(config: AppConfig, data_dir: Path) -> dict[tuple[str, str], LoadedPreset]:
@@ -196,9 +248,13 @@ def load_presets(config: AppConfig, data_dir: Path) -> dict[tuple[str, str], Loa
         if hashlib.sha256(content).hexdigest() != preset.sha256:
             raise WorkflowError("workflow_digest_mismatch")
         graph = _validate_graph(parse_json_strict(content))
-        policy = models[preset.model].cache_policy
-        _validate_bindings(preset, graph, policy)
-        loaded[(preset.model, preset.voice)] = LoadedPreset(preset.model_copy(deep=True), deepcopy(graph), policy)
+        model = models[preset.model]
+        policy = model.cache_policy
+        idle_release = model.idle_release.model_copy(deep=True) if model.idle_release is not None else None
+        _validate_bindings(preset, graph, policy, idle_release)
+        loaded[(preset.model, preset.voice)] = LoadedPreset(
+            preset.model_copy(deep=True), deepcopy(graph), policy, idle_release
+        )
     return loaded
 
 
@@ -298,12 +354,42 @@ def _schema_errors(graph: dict, schemas: dict) -> list[str]:
     return sorted(errors)
 
 
+def _cleanup_seed_schema_errors(loaded: LoadedPreset, schemas: dict) -> set[str]:
+    """Prove a literal INT seed can span the complete durable cleanup sequence."""
+    node = loaded.graph[loaded.preset.text_binding.node_id]
+    schema = schemas.get(node["class_type"])
+    inputs = schema.get("input") if isinstance(schema, dict) else None
+    if not isinstance(inputs, dict):
+        return {"cache_cleanup_seed_schema"}
+    specs = [inputs[group]["seed"] for group in ("required", "optional")
+             if isinstance(inputs.get(group), dict) and "seed" in inputs[group]]
+    if len(specs) != 1:
+        return {"cache_cleanup_seed_schema"}
+    spec = specs[0]
+    if (not isinstance(spec, (list, tuple)) or not spec or spec[0] != "INT"
+            or (len(spec) > 1 and not isinstance(spec[1], dict))):
+        return {"cache_cleanup_seed_schema"}
+    options = spec[1] if len(spec) > 1 else {}
+    for name in ("min", "max"):
+        if name in options and (type(options[name]) not in (int, float)
+                or (type(options[name]) is float and not math.isfinite(options[name]))):
+            return {"cache_cleanup_seed_schema"}
+    # Missing constraints mean unbounded INT in native Comfy validation.
+    if options.get("min", 0) > 0 or options.get("max", MAX_CLEANUP_SEED) < MAX_CLEANUP_SEED:
+        return {"cache_cleanup_seed_range"}
+    return set()
+
+
 def validate_live(loaded: LoadedPreset, schemas: dict[str, dict]) -> list[str]:
     """Pure object_info compatibility check; diagnostics never contain template text."""
     try:
         _validate_graph(loaded.graph)
-        _validate_bindings(loaded.preset, loaded.graph, loaded.cache_policy)
+        _validate_bindings(loaded.preset, loaded.graph, loaded.cache_policy, loaded.idle_release)
         graph = loaded.build_prompt(loaded.graph[loaded.preset.text_binding.node_id]["inputs"][loaded.preset.text_binding.field])
+    except WorkflowError as error:
+        if str(error) in {"cache_cleanup_unsupported", "cache_cleanup_seed_binding"}:
+            return [str(error)]
+        return ["schema_invalid_graph"]
     except (ValueError, KeyError, TypeError):
         return ["schema_invalid_graph"]
     if type(schemas) is not dict:
@@ -346,6 +432,16 @@ def validate_live(loaded: LoadedPreset, schemas: dict[str, dict]) -> list[str]:
         outputs = source_schema.get("output", []) if isinstance(source_schema, dict) else []
         if not isinstance(outputs, (list, tuple)) or slot >= len(outputs) or outputs[slot] != "AUDIO":
             errors.add("schema_audio_output")
+    if loaded.cache_policy == "idle_release" and loaded.idle_release.method == "workflow":
+        errors.update(_cleanup_seed_schema_errors(loaded, schemas))
+        try:
+            cleanup_graph = loaded.build_cleanup_prompt(loaded.idle_release.text, 1)
+        except WorkflowError as error:
+            errors.add(str(error) if str(error) in {
+                "cache_cleanup_unsupported", "cache_cleanup_seed_binding", "cache_cleanup_text"
+            } else "schema_invalid_graph")
+        else:
+            errors.update(_schema_errors(cleanup_graph, schemas))
     return sorted(errors)
 
 

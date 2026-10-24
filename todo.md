@@ -1,6 +1,6 @@
 # ComfyBridge：已确认需求与后续待办
 
-> 更新日期：2026-10-24。0.2.0 双语菜单已实现，冻结源码完整回归 673 passed／6 skipped；见 [交互验收](<docs/UI_020_VALIDATION.md>)。0.1.0 历史结果为 368 passed／5 skipped。
+> 更新日期：2026-10-24。0.3.0 定时缓存的已批准规则与验证见 [缓存说明](<docs/CACHE_030.md>)、[0.3.0 验收](<docs/CACHE_030_VALIDATION.md>)。0.2.0 历史冻结源码完整回归 673 passed／6 skipped，见 [交互验收](<docs/UI_020_VALIDATION.md>)；0.1.0 历史结果为 368 passed／5 skipped。
 > 真实 Example 已完成四次直接实验和两次经 Bridge 的 SDK 验收；目录包的对应构建烟测以随包报告为准。未修改 ComfyUI 安装或画布，未启用用户自启动或修改防火墙。
 > 第 2–5 节保留需求与调查背景；已收敛的技术选择及当前完成状态以第 6–7 节和 [验收记录](<docs/VALIDATION.md>) 为准。“已确认”不自动等于“所有环境已验收”。
 

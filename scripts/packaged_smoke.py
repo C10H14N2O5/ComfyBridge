@@ -19,7 +19,8 @@ from openai import OpenAI
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
 from test_sdk_integration import FakeComfy, make_config
-from comfybridge.config import save_config
+from comfybridge.config import AppConfig, Binding, save_config
+from comfybridge.workflows import import_template
 from comfybridge.control import get_status, config_digest
 from comfybridge.ui_preferences import UIPreferences, save_ui_preferences, load_ui_preferences
 
@@ -30,6 +31,61 @@ def free_port():
         return sock.getsockname()[1]
 
 
+class CacheFakeComfy(FakeComfy):
+    """Protocol-only fake: no IndexTTS installation, model or GPU is involved."""
+    def __init__(self):
+        super().__init__()
+        self.free_calls = 0
+        self.downloads = 0
+
+    def handle(self, request):
+        path = request.url.path
+        schemas = {
+            'IndexTTS25BaseNode': {'input': {'required': {'text': ['STRING', {}]}, 'optional': {
+                'cache_control': ['DICT', {}], 'seed': ['INT', {'min': 0, 'max': 4294967295}]}},
+                'output': ['AUDIO', 'INT', 'STRING'], 'output_node': False},
+            'IndexTTS25CacheControlNode': {'input': {'required': {'keep_models_cached': ['BOOLEAN', {}]}},
+                'output': ['DICT'], 'output_node': False},
+        }
+        if path.startswith('/object_info/') and path.rsplit('/', 1)[1] in schemas:
+            kind = path.rsplit('/', 1)[1]
+            return httpx.Response(200, json={kind: schemas[kind]})
+        if path == '/free':
+            assert request.method == 'POST'
+            assert json.loads(request.content) == {'unload_models': True, 'free_memory': True}
+            self.free_calls += 1
+            return httpx.Response(200)
+        if path == '/view':
+            self.downloads += 1
+        return super().handle(request)
+
+
+def cache_config(data_dir):
+    config = make_config(data_dir)
+    graph = {
+        '2': {'class_type': 'IndexTTS25BaseNode', 'inputs': {
+            'text': 'placeholder', 'cache_control': ['3', 0], 'seed': 123}},
+        '3': {'class_type': 'IndexTTS25CacheControlNode', 'inputs': {'keep_models_cached': False}},
+        '4': {'class_type': 'SaveAudio', 'inputs': {'audio': ['2', 0], 'filename_prefix': 'test'}},
+    }
+    preset = config.presets[0]
+    preset.template, preset.sha256 = import_template(data_dir, graph, preset.model, preset.voice, preset.id)
+    preset.cache_binding = Binding(node_id='3', field='keep_models_cached')
+    document = config.model_dump(mode='json')
+    document['models'][0].update(cache_policy='idle_release', idle_release={
+        'seconds': 1, 'method': 'workflow', 'text': '好。'})
+    return AppConfig.model_validate(document)
+
+
+def wait_for(predicate, timeout=12):
+    until = time.monotonic() + timeout
+    while time.monotonic() < until:
+        if predicate():
+            return
+        time.sleep(.05)
+    raise AssertionError('packaged_condition_timed_out')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('release', type=Path)
@@ -38,7 +94,7 @@ def main():
     executable = release / 'ComfyBridge.exe'
     if not executable.is_file():
         parser.error('Packaged executable not found')
-    fake = FakeComfy()
+    fake = CacheFakeComfy()
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self): self.respond()
         def do_POST(self): self.respond()
@@ -61,7 +117,7 @@ def main():
     report = {'release': release.name, 'path_isolated': True, 'gpu_requests': 0}
     with tempfile.TemporaryDirectory(prefix='comfybridge-packaged-中文 空格-') as temporary:
         data_dir = Path(temporary)
-        config = make_config(data_dir)
+        config = cache_config(data_dir)
         config.server.listen_port = free_port()
         config.comfyui.base_url = f'http://127.0.0.1:{remote.server_port}'
         save_config(data_dir, config)
@@ -123,7 +179,52 @@ def main():
                         assert payload.startswith(magic)
                         formats[fmt] = len(payload)
                 report['audio_bytes'] = formats
-            assert len(fake.posts) == 2
+            def cache_state():
+                state = get_status(data_dir)
+                return state.get('cache', [{}])[0].get('state') if state else None
+            wait_for(lambda: len(fake.posts) == 3 and cache_state() == 'completed')
+            assert all(post['prompt']['3']['inputs']['keep_models_cached'] is True for post in fake.posts[:2])
+            first_cleanup = fake.posts[2]['prompt']
+            assert first_cleanup['3']['inputs']['keep_models_cached'] is False
+            assert first_cleanup['2']['inputs']['text'] == '好。'
+            assert fake.downloads == 2
+            assert fake.free_calls == 0
+            time.sleep(1.2)
+            assert len(fake.posts) == 3  # Internal cleanup must not arm another timer.
+            with OpenAI(api_key=config.server.api_key, base_url=f'http://127.0.0.1:{config.server.listen_port}/v1',
+                        max_retries=0, http_client=httpx.Client(trust_env=False, timeout=20)) as sdk:
+                response = sdk.audio.speech.create(model='index-tts-2.5', voice='example',
+                        input='Second timed cycle.', response_format='wav')
+                assert response.content.startswith(b'RIFF')
+            wait_for(lambda: len(fake.posts) == 5 and cache_state() == 'completed')
+            second_cleanup = fake.posts[4]['prompt']
+            assert second_cleanup['2']['inputs']['seed'] != first_cleanup['2']['inputs']['seed']
+            assert second_cleanup['3']['inputs']['keep_models_cached'] is False
+            assert fake.downloads == 3
+            report['workflow_idle_release'] = {'cycles': 2, 'business_requests': 3,
+                'cleanup_requests': 2, 'distinct_cleanup_seeds': True, 'cleanup_audio_downloads': 0}
+            # Apply /free through a deliberate stop/save/start, never hot reload.
+            stopped = subprocess.run([*command, 'stop', '--yes'], env=env, stdin=subprocess.DEVNULL,
+                                     capture_output=True, timeout=10)
+            assert stopped.returncode == 0
+            wait_for(lambda: get_status(data_dir) is None)
+            document = config.model_dump(mode='json')
+            document['models'][0]['idle_release']['method'] = 'free'
+            config = AppConfig.model_validate(document)
+            save_config(data_dir, config)
+            restarted = subprocess.run([*command, 'start'], env=env, stdin=subprocess.DEVNULL,
+                                       capture_output=True, timeout=35)
+            assert restarted.returncode == 0
+            with OpenAI(api_key=config.server.api_key, base_url=f'http://127.0.0.1:{config.server.listen_port}/v1',
+                        max_retries=0, http_client=httpx.Client(trust_env=False, timeout=20)) as sdk:
+                response = sdk.audio.speech.create(model='index-tts-2.5', voice='example',
+                        input='Native free test.', response_format='wav')
+                assert response.content.startswith(b'RIFF')
+            wait_for(lambda: fake.free_calls == 1 and cache_state() == 'requested')
+            time.sleep(1.2)
+            assert len(fake.posts) == 6 and fake.free_calls == 1 and fake.downloads == 4
+            report['native_free_idle_release'] = {'calls': 1, 'native_empty_200': True,
+                'acknowledgment_not_vram_proof': True, 'unexpected_workflow_cleanup_requests': 0}
             report['fake_submissions'] = len(fake.posts)
         finally:
             if started:

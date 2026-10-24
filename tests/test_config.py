@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from comfybridge.config import (
-    AppConfig, Binding, ComfyConfig, ConfigError, LimitsConfig, LoggingConfig,
+    AppConfig, Binding, ComfyConfig, ConfigError, IdleReleaseConfig, LimitsConfig, LoggingConfig,
     ModelConfig, PresetConfig, ServerConfig, load_config, parse_json_strict, save_config,
 )
 
@@ -131,6 +131,145 @@ def test_unique_routes_ids_and_registered_models():
         with pytest.raises(ValidationError):
             config(models=models, presets=presets)
     assert len(config(models=[{"id": "Index-TTS"}, {"id": "index-tts"}]).models) == 2
+
+
+@pytest.mark.parametrize("method", ["free", "workflow"])
+def test_idle_release_defaults_and_schema_one_roundtrip(tmp_path, method):
+    value = IdleReleaseConfig(method=method)
+    assert value.seconds == 300 and value.text == "好。"
+    cfg = config(models=[{"id": "Index-TTS", "cache_policy": "idle_release", "idle_release": {"method": method}}])
+    assert cfg.schema_version == 1
+    save_config(tmp_path, cfg)
+    restored = load_config(tmp_path)
+    assert restored == cfg
+    assert restored.models[0].idle_release.method == method
+
+
+@pytest.mark.parametrize("seconds", [0, -1, 86401, 2**64, True, False, "300", 1.0, None])
+def test_idle_seconds_strict_and_bounded(seconds):
+    with pytest.raises(ValidationError):
+        IdleReleaseConfig(method="free", seconds=seconds)
+
+
+@pytest.mark.parametrize("seconds", [1, 300, 86400])
+def test_idle_seconds_boundary(seconds):
+    assert IdleReleaseConfig(method="free", seconds=seconds).seconds == seconds
+
+
+@pytest.mark.parametrize("text", ["", " ", "\t\n\r", "x" * 65, "😀" * 65, None, 1, True,
+                                  "\ud800", "x\udfff", "\x00hello", "\x1b[31mhello", "x\x85y"])
+def test_idle_text_strict_scalar_nonblank_and_bounded(text):
+    with pytest.raises(ValidationError):
+        IdleReleaseConfig(method="workflow", text=text)
+
+
+@pytest.mark.parametrize("text", ["好。", " x ", "\nhello\t", "😀" * 64, "中" * 64])
+def test_idle_text_retained_without_trimming(text):
+    assert IdleReleaseConfig(method="workflow", text=text).text == text
+
+
+@pytest.mark.parametrize("fields", [{}, {"method": None}, {"method": "other"}, {"method": True},
+                                    {"method": "free", "unexpected": 1}])
+def test_idle_method_required_strict_and_extra_forbidden(fields):
+    with pytest.raises(ValidationError):
+        IdleReleaseConfig.model_validate(fields)
+
+
+@pytest.mark.parametrize("settings", [None, {}])
+def test_idle_policy_requires_settings(settings):
+    with pytest.raises(ValidationError):
+        ModelConfig(id="m", cache_policy="idle_release", idle_release=settings)
+
+
+@pytest.mark.parametrize("policy", ["inherit", "keep", "release"])
+def test_legacy_policy_rejects_dangling_idle_settings(policy):
+    with pytest.raises(ValidationError, match="idle_release_settings_not_applicable"):
+        ModelConfig(id="m", cache_policy=policy, idle_release=IdleReleaseConfig(method="free"))
+    assert ModelConfig(id="m", cache_policy=policy).idle_release is None
+
+
+@pytest.mark.parametrize("policy", ["inherit", "keep", "release"])
+def test_old_model_serialization_omits_only_idle_none(policy):
+    model = ModelConfig(id="m", cache_policy=policy, idle_release=None)
+    expected = {"id": "m", "cache_policy": policy}
+    assert model.model_dump() == expected
+    assert model.model_dump(mode="json") == expected
+    assert json.loads(model.model_dump_json()) == expected
+    assert model.model_dump(include={"id"}) == {"id": "m"}
+    assert model.model_dump(exclude={"id"}) == {"cache_policy": policy}
+
+
+@pytest.mark.parametrize("method", ["free", "workflow"])
+def test_active_idle_settings_remain_serialized(method):
+    model = ModelConfig(id="m", cache_policy="idle_release", idle_release=IdleReleaseConfig(method=method))
+    expected = {"seconds": 300, "method": method, "text": "好。"}
+    assert model.model_dump()["idle_release"] == expected
+    assert json.loads(model.model_dump_json())["idle_release"] == expected
+    assert model.model_dump(include={"idle_release"}) == {"idle_release": expected}
+
+
+@pytest.mark.parametrize("policy", ["inherit", "keep", "release"])
+def test_switch_back_saved_models_are_readable_by_old_extra_forbid_schema(tmp_path, policy):
+    from typing import Literal
+    from pydantic import BaseModel, ConfigDict
+
+    class LegacyModel(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+        id: str
+        cache_policy: Literal["inherit", "keep", "release"] = "inherit"
+
+    cfg = config(models=[{"id": "m", "cache_policy": "idle_release", "idle_release": {"method": "free"}}])
+    save_config(tmp_path, cfg)
+    assert "idle_release" in json.loads((tmp_path / "config.json").read_bytes())["models"][0]
+    cfg.models[0] = ModelConfig(id="m", cache_policy=policy)
+    save_config(tmp_path, cfg)
+    saved = json.loads((tmp_path / "config.json").read_bytes())
+    assert "idle_release" not in saved["models"][0]
+    assert LegacyModel.model_validate(saved["models"][0]).cache_policy == policy
+    assert load_config(tmp_path).models[0].idle_release is None
+
+
+def test_old_config_digest_and_other_nullable_fields_are_unchanged():
+    import hashlib
+    from comfybridge.control import config_digest
+
+    cfg = config(models=[{"id": "Index-TTS", "cache_policy": "inherit"}], presets=[preset()])
+    expected = cfg.model_dump(mode="json")
+    expected["models"] = [{"id": "Index-TTS", "cache_policy": "inherit"}]
+    assert cfg.model_dump(mode="json") == expected
+    assert "cache_binding" in expected["presets"][0] and expected["presets"][0]["cache_binding"] is None
+    legacy_digest = hashlib.sha256(json.dumps(expected, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    assert config_digest(cfg) == legacy_digest
+
+
+def test_idle_free_needs_no_cache_binding_but_workflow_does():
+    values = {"id": "Index-TTS", "cache_policy": "idle_release", "idle_release": {"method": "free"}}
+    assert config(models=[values], presets=[preset()]).presets[0].cache_binding is None
+    values["idle_release"]["method"] = "workflow"
+    with pytest.raises(ValidationError, match="cache_binding_required"):
+        config(models=[values], presets=[preset()])
+    config(models=[values], presets=[preset(cache_binding={"node_id": "3", "field": "keep_models_cached"})])
+
+
+def test_old_schema_one_config_loads_without_rewrite(tmp_path):
+    document = {"schema_version": 1, "server": {"api_key": "test-key"}, "comfyui": {},
+                "models": [{"id": "m", "cache_policy": "keep"}]}
+    encoded = json.dumps(document).encode("utf-8")
+    (tmp_path / "config.json").write_bytes(encoded)
+    restored = load_config(tmp_path)
+    assert restored.schema_version == 1
+    assert restored.models[0].cache_policy == "keep" and restored.models[0].idle_release is None
+    assert (tmp_path / "config.json").read_bytes() == encoded
+
+
+def test_mutated_idle_settings_fail_before_save(tmp_path):
+    cfg = config(models=[{"id": "m", "cache_policy": "idle_release", "idle_release": {"method": "free"}}])
+    save_config(tmp_path, cfg)
+    original = (tmp_path / "config.json").read_bytes()
+    cfg.models[0] = cfg.models[0].model_copy(update={"cache_policy": "inherit"})
+    with pytest.raises(ValidationError):
+        save_config(tmp_path, cfg)
+    assert (tmp_path / "config.json").read_bytes() == original
 
 
 def test_cache_override_requires_binding():

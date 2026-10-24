@@ -64,6 +64,11 @@ MESSAGES = {
     'inherit': ('跟随工作流', 'Follow workflow'),
     'keep': ('保留缓存', 'Keep cached'),
     'release': ('生成后不保留缓存', 'Release after generation'),
+    'idle_release': ('定时丢弃', 'Release after idle timeout'),
+    'idle_free': ('/free（实例级卸载请求）', '/free (instance-wide unload request)'),
+    'idle_workflow': ('工作流（真实 GPU 清理任务）', 'workflow (real GPU cleanup task)'),
+    'idle_settings': ('    空闲 {seconds} 秒后；方式：{method}', '    After {seconds} idle seconds; method: {method}'),
+    'idle_not_vram_proof': ('    请求受理或清理任务完成均不证明显存已释放。', '    Request acceptance or cleanup completion does not prove VRAM was freed.'),
     'presets': ('音色路由（{count}）：', 'Voice routes ({count}):'),
     'limits': ('限制（字段名保持协议原名）：', 'Limits (canonical field identifiers):'),
     'logging': ('日志容量：每份 {size} 字节，{count} 份备份', 'Logs: {size} bytes per file, {count} backups'),
@@ -210,6 +215,11 @@ class Home:
         self.output(self.t('models', count=len(config.models)))
         for model in config.models:
             self.output(self.t('model', model=safe_text(model.id), policy=self.t(model.cache_policy)))
+            if model.cache_policy == 'idle_release' and model.idle_release is not None:
+                self.output(self.t('idle_settings', seconds=model.idle_release.seconds,
+                                   method=self.t('idle_' + model.idle_release.method)))
+                self.output(self.t('idle_not_vram_proof'))
+                # The configured cleanup text is not status/summary metadata.
         self.output(self.t('presets', count=len(config.presets)))
         for preset in config.presets:
             self.output('  ' + safe_text(preset.model) + ' / ' + safe_text(preset.voice))
