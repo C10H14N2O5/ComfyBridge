@@ -184,7 +184,7 @@ pwsh -File .\scripts\build.ps1
 
 源码构建需要 PowerShell 7（`pwsh`）与 uv；使用 Setup 和安装后的程序不需要安装 Python 或 PowerShell 7。可用 `-LegacyRelease <旧版目录>` 为构建增加真实旧包升级验收。
 
-正常测试使用模拟 ComfyUI，不提交 GPU 任务。真实实验脚本需要用户明确授权；已有意图记录的实验拒绝重复执行。历史四次直接 Example 实验见 [实验记录](<docs/EXPERIMENTS.md>)；v0.3.0 的真实定时缓存、恢复和显存观测见 [缓存验收](<docs/CACHE_030_VALIDATION.md>)。
+正常测试使用模拟 ComfyUI，不提交 GPU 任务。真实实验脚本需要用户明确授权；已有意图记录的实验拒绝重复执行。测试与发布要求见 [架构说明](<ARCHITECTURE.md#tests-and-release>)。历史实验与交付记录可通过 Git 历史查阅。
 
 构建会获取校验和固定的 FFmpeg／ffprobe，保留共享 DLL、许可和源码来源，先生成并测试完整程序目录，再封装离线单文件 Setup，通过安装器烟测后才发布 EXE。程序未签名；SHA-256 只能检查完整性，不能替代可信下载来源或代码签名。外网部署、Windows 服务、多用户并发更新和通用工作流编辑器不在当前范围。
 
