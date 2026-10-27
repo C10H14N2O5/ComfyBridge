@@ -24,22 +24,6 @@ def test_ctrl_c_monitor_does_not_touch_backend(tmp_path, monkeypatch):
     assert module.monitor(tmp_path, key_reader=interrupted, output=lambda _: None) == 0
 
 
-def test_stop_requires_confirmation(tmp_path, monkeypatch):
-    monkeypatch.setattr(module, 'monitor_snapshot', lambda _: {'backend': {}})
-    monkeypatch.setattr('comfybridge.launcher.request_stop', lambda *_a, **_k: pytest.fail('unconfirmed'))
-    keys = iter(['x', 'q'])
-    assert module.monitor(tmp_path, key_reader=lambda: next(keys), output=lambda _: None, confirm=lambda _: False) == 0
-
-
-def test_monitor_restart_is_detached_command(tmp_path, monkeypatch):
-    monkeypatch.setattr(module, 'monitor_snapshot', lambda _: {'backend': {}})
-    called = []
-    monkeypatch.setattr('comfybridge.launcher.request_restart', called.append)
-    keys = iter(['r', 'q'])
-    assert module.monitor(tmp_path, key_reader=lambda: next(keys), output=lambda _: None, confirm=lambda _: True) == 0
-    assert called == [tmp_path]
-
-
 def test_bounded_log_tail_strips_terminal_controls(tmp_path):
     path = tmp_path / 'test.log'
     path.write_bytes(b'old\n' * 100000 + b'last\x1b[31m\nfinal\n')
@@ -210,7 +194,7 @@ def test_vertical_controls_and_return_never_mutate_backend(tmp_path, monkeypatch
         ('关闭监控' if language == 'zh-CN' else 'Close monitor') in controls[-1])
 
 
-@pytest.mark.parametrize('key,action', [('1', 'ensure_backend'), ('s', 'ensure_backend'), ('3', 'request_restart'), ('r', 'request_restart')])
+@pytest.mark.parametrize('key,action', [('1', 'ensure_backend'), ('s', 'ensure_backend')])
 def test_numbered_management_and_legacy_aliases(tmp_path, monkeypatch, key, action):
     monkeypatch.setattr(module, 'monitor_snapshot', lambda _: {'backend': {}})
     called = []
@@ -220,39 +204,65 @@ def test_numbered_management_and_legacy_aliases(tmp_path, monkeypatch, key, acti
     assert called == [tmp_path]
 
 
-@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
-@pytest.mark.parametrize('key', ['3', 'r', 'R'])
+# Numbered keys and legacy letter aliases for every action that needs confirmation.
+# Case folding is generic (key.lower()); the real-pipe test below covers uppercase 'R'.
+DESTRUCTIVE_ACTIONS = [
+    ('2', 'request_stop', {'force': False}, 'stop_confirm', 'stop_requested'),
+    ('x', 'request_stop', {'force': False}, 'stop_confirm', 'stop_requested'),
+    ('5', 'request_stop', {'force': True}, 'force_confirm', 'stop_requested'),
+    ('f', 'request_stop', {'force': True}, 'force_confirm', 'stop_requested'),
+    ('3', 'request_restart', {}, 'restart_confirm', 'restart_requested'),
+    ('r', 'request_restart', {}, 'restart_confirm', 'restart_requested'),
+]
+
+
+@pytest.mark.parametrize('key,action,kwargs,prompt_key,done_key', DESTRUCTIVE_ACTIONS)
 @pytest.mark.parametrize('confirmed', [False, True])
-def test_restart_requires_explicit_confirmation_for_every_alias(tmp_path, monkeypatch, language, key, confirmed):
+def test_destructive_actions_run_only_after_explicit_confirmation(tmp_path, monkeypatch, key, action, kwargs,
+                                                                  prompt_key, done_key, confirmed):
     monkeypatch.setattr(module, 'monitor_snapshot', lambda _: {'backend': {}})
-    called, prompts, lines = [], [], []
-    monkeypatch.setattr('comfybridge.launcher.request_restart', called.append)
+    calls, prompts, lines = [], [], []
+    for name in ('request_stop', 'request_restart'):
+        monkeypatch.setattr('comfybridge.launcher.' + name,
+                            lambda *args, _name=name, **kw: calls.append((_name, args, kw)))
+    monkeypatch.setattr('comfybridge.launcher.ensure_backend', lambda *_a, **_k: pytest.fail('must not start backend'))
+    ui = UIContext('zh-CN')
     keys = iter([key, 'q'])
     def confirm(prompt):
         prompts.append(prompt)
         return confirmed
-    assert module.monitor(tmp_path, ui=UIContext(language), key_reader=lambda: next(keys),
-                          output=lines.append, confirm=confirm) == 0
-    assert called == ([tmp_path] if confirmed else [])
-    assert len(prompts) == 1 and '[1]' in prompts[0] and '[0]' in prompts[0]
-    assert ('默认取消' if language == 'zh-CN' else 'default cancel') in prompts[0]
-    assert ('独立控制器' if language == 'zh-CN' else 'independent controller') in prompts[0]
-    expected = ('已启动独立重启控制器' if language == 'zh-CN' else 'Independent restart controller started') if confirmed else (
-        '操作已取消' if language == 'zh-CN' else 'Operation cancelled')
-    assert any(expected in line for line in lines)
+    assert module.monitor(tmp_path, ui=ui, key_reader=lambda: next(keys), output=lines.append, confirm=confirm) == 0
+    assert prompts == [ui.t(module.MESSAGES, prompt_key)]
+    assert calls == ([(action, (tmp_path,), kwargs)] if confirmed else [])
+    assert ui.t(module.MESSAGES, done_key if confirmed else 'cancelled') in lines
 
 
-@pytest.mark.parametrize('key', ['3', 'r'])
+# The default confirm is a single lambda shared by every action, so one action suffices.
 @pytest.mark.parametrize('answer,accepted', [('', False), (' ', False), ('0', False), ('n', False), ('N', False),
                                            ('unexpected', False), ('1', True), ('Y', True), ('y', True)])
-def test_restart_default_confirmation_is_cancel_unless_explicit_yes(tmp_path, monkeypatch, key, answer, accepted):
+def test_default_confirmation_requires_explicit_yes(tmp_path, monkeypatch, answer, accepted):
     monkeypatch.setattr(module, 'monitor_snapshot', lambda _: {'backend': {}})
     monkeypatch.setattr(module, 'ConsoleInput', lambda: SimpleNamespace(ask=lambda _: answer))
     called = []
     monkeypatch.setattr('comfybridge.launcher.request_restart', called.append)
-    keys = iter([key, '0'])
+    keys = iter(['r', '0'])
     assert module.monitor(tmp_path, key_reader=lambda: next(keys), output=lambda _: None) == 0
     assert called == ([tmp_path] if accepted else [])
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+def test_confirmation_prompts_state_safety_warnings(language):
+    ui = UIContext(language)
+    zh = language == 'zh-CN'
+    def text(key):
+        return ui.t(module.MESSAGES, key)
+    for key in ('stop_confirm', 'force_confirm', 'restart_confirm'):
+        assert '[1]' in text(key) and '[0]' in text(key), key
+    assert ('默认取消' if zh else 'default cancel') in text('restart_confirm')
+    assert ('独立控制器' if zh else 'independent controller') in text('restart_confirm')
+    assert ('远端任务可能继续' if zh else 'remote tasks may continue') in text('force_confirm')
+    assert ('任务记录将保留' if zh else 'journal is retained') in text('force_confirm')
+    assert ('已启动独立重启控制器' if zh else 'Independent restart controller started') in text('restart_requested')
 
 
 @pytest.mark.parametrize('interruption', [EOFError, KeyboardInterrupt])
@@ -262,34 +272,6 @@ def test_interrupted_restart_confirmation_does_not_restart(tmp_path, monkeypatch
     def confirm(_):
         raise interruption()
     assert module.monitor(tmp_path, key_reader=lambda: 'r', output=lambda _: None, confirm=confirm) == 0
-
-
-@pytest.mark.parametrize('key,force', [('2', False), ('x', False), ('5', True), ('f', True)])
-@pytest.mark.parametrize('confirmed', [False, True])
-def test_stops_are_explicit_localized_confirmations(tmp_path, monkeypatch, key, force, confirmed):
-    monkeypatch.setattr(module, 'monitor_snapshot', lambda _: {'backend': {}})
-    called, prompts = [], []
-    monkeypatch.setattr('comfybridge.launcher.request_stop', lambda path, **kwargs: called.append((path, kwargs)))
-    keys = iter([key, 'q'])
-    def confirm(prompt):
-        prompts.append(prompt)
-        return confirmed
-    assert module.monitor(tmp_path, ui=UIContext('zh-CN'), key_reader=lambda: next(keys), output=lambda _: None, confirm=confirm) == 0
-    assert '[1] 确认' in prompts[0] and '[0] 取消' in prompts[0]
-    if force:
-        assert '远端任务可能继续' in prompts[0] and '任务记录将保留' in prompts[0]
-    assert called == ([(tmp_path, {'force': force})] if confirmed else [])
-
-
-@pytest.mark.parametrize('answer,accepted', [('1', True), ('y', True), ('Y', True), ('0', False), ('n', False), ('unexpected', False)])
-def test_default_confirmation_accepts_numbered_and_legacy_answers(tmp_path, monkeypatch, answer, accepted):
-    monkeypatch.setattr(module, 'monitor_snapshot', lambda _: {'backend': {}})
-    monkeypatch.setattr(module, 'ConsoleInput', lambda: SimpleNamespace(ask=lambda _: answer))
-    called = []
-    monkeypatch.setattr('comfybridge.launcher.request_stop', lambda *_a, **_k: called.append(True))
-    keys = iter(['x', 'q'])
-    module.monitor(tmp_path, key_reader=lambda: next(keys), output=lambda _: None)
-    assert bool(called) is accepted
 
 
 @pytest.mark.parametrize('key', ['4', 'c'])
@@ -396,16 +378,35 @@ def cache_row(**changes):
             'state': 'countdown', 'error_code': None, 'voice': 'last-voice', **changes}
 
 
+# Explicit contracts: a production allowlist addition/removal must be reviewed here.
+CACHE_STATES = ('pending_idle', 'countdown', 'waiting_remote', 'releasing',
+                'requested', 'completed', 'failed', 'uncertain', 'stale')
+CACHE_ERROR_CODES = ('cache_remote_busy', 'cache_remote_unavailable', 'cache_config_stale',
+                     'cache_build_failed', 'cache_free_uncertain', 'cache_free_failed',
+                     'cache_cleanup_failed', 'cache_deadline_exceeded', 'cache_not_active',
+                     'cache_admin_resolved', 'cache_release_uncertain', 'submission_uncertain',
+                     'cache_seed_exhausted')
+CACHE_LOG_EVENTS = ('cache_release_intent', 'cache_release_requested', 'cache_release_completed',
+                    'cache_release_failed', 'cache_release_uncertain')
+
+
+def test_cache_vocabularies_match_monitor_allowlists():
+    for values, allowed in ((CACHE_STATES, module._CACHE_STATES),
+                            (CACHE_ERROR_CODES, module._CACHE_ERRORS),
+                            (CACHE_LOG_EVENTS, module._CACHE_EVENTS)):
+        assert len(values) == len(set(values)), values
+        assert set(values) == allowed, values
+
+
 @pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
-@pytest.mark.parametrize('state', ['pending_idle', 'countdown', 'waiting_remote', 'releasing',
-                                   'requested', 'completed', 'failed', 'uncertain', 'stale'])
-def test_idle_cache_states_are_localized_recognized_metadata(language, state):
+def test_idle_cache_states_are_localized_recognized_metadata(language):
     ui = UIContext(language)
-    status = {'ready': True, 'cache': [cache_row(state=state)]}
-    text = '\n'.join(module.format_status(status, ui))
-    assert ui.t(module.MESSAGES, 'cache_state_' + state) in text
-    assert 'model-id' in text and 'last-voice' in text and '25.5' in text and '300' in text
-    assert ui.t(module.MESSAGES, 'cache_method_workflow') in text
+    for state in CACHE_STATES:
+        status = {'ready': True, 'cache': [cache_row(state=state)]}
+        text = '\n'.join(module.format_status(status, ui))
+        assert ui.t(module.MESSAGES, 'cache_state_' + state) in text, state
+        assert 'model-id' in text and 'last-voice' in text and '25.5' in text and '300' in text, state
+        assert ui.t(module.MESSAGES, 'cache_method_workflow') in text, state
 
 
 @pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
@@ -456,29 +457,25 @@ def test_cache_countdown_accepts_boundary_values_and_bounds_rows():
 
 
 @pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
-@pytest.mark.parametrize('code', ['cache_remote_busy', 'cache_remote_unavailable', 'cache_config_stale',
-                                 'cache_build_failed', 'cache_free_uncertain', 'cache_free_failed',
-                                 'cache_cleanup_failed', 'cache_deadline_exceeded', 'cache_not_active',
-                                 'cache_admin_resolved', 'cache_release_uncertain', 'submission_uncertain', 'cache_seed_exhausted'])
-def test_cache_error_codes_are_localized_without_raw_responses(language, code):
+def test_cache_error_codes_are_localized_without_raw_responses(language):
     ui = UIContext(language)
-    text = '\n'.join(module.format_cache_status([cache_row(error_code=code)], ui))
-    assert ui.t(module.MESSAGES, 'code_' + code) in text
+    for code in CACHE_ERROR_CODES:
+        text = '\n'.join(module.format_cache_status([cache_row(error_code=code)], ui))
+        assert ui.t(module.MESSAGES, 'code_' + code) in text, code
 
 
 @pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
-@pytest.mark.parametrize('event', ['cache_release_intent', 'cache_release_requested', 'cache_release_completed',
-                                  'cache_release_failed', 'cache_release_uncertain'])
-def test_cache_log_events_are_safe_and_localized(language, event):
+def test_cache_log_events_are_safe_and_localized(language):
     ui = UIContext(language)
-    raw = json.dumps({'event': event, 'level': 'INFO', 'model': 'm', 'prompt_id': 'uuid',
-                      'state': 'uncertain', 'code': 'cache_free_uncertain', 'count': 1,
-                      'text': 'PRIVATE-CLEANUP', 'input': 'PRIVATE-TEXT', 'message': 'PRIVATE-EXCEPTION',
-                      'token': 'PRIVATE-TOKEN', 'graph': {'text': 'PRIVATE-GRAPH'}})
-    text = module.format_log_line(raw, ui)
-    assert ui.t(module.MESSAGES, 'event_' + event) in text
-    assert 'PRIVATE' not in text
-    assert ui.t(module.MESSAGES, 'cache_state_uncertain') in text
+    for event in CACHE_LOG_EVENTS:
+        raw = json.dumps({'event': event, 'level': 'INFO', 'model': 'm', 'prompt_id': 'uuid',
+                          'state': 'uncertain', 'code': 'cache_free_uncertain', 'count': 1,
+                          'text': 'PRIVATE-CLEANUP', 'input': 'PRIVATE-TEXT', 'message': 'PRIVATE-EXCEPTION',
+                          'token': 'PRIVATE-TOKEN', 'graph': {'text': 'PRIVATE-GRAPH'}})
+        text = module.format_log_line(raw, ui)
+        assert ui.t(module.MESSAGES, 'event_' + event) in text, event
+        assert 'PRIVATE' not in text, event
+        assert ui.t(module.MESSAGES, 'cache_state_uncertain') in text, event
 
 
 def test_cache_unknown_log_event_state_error_never_echoed():
