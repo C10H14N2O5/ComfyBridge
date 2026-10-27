@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$SkipTests, [string]$ReleaseName = ('ComfyBridge-0.4.0-windows-x64-' + (Get-Date -Format 'yyyyMMdd-HHmmss')), [string]$LegacyRelease = '')
+param([switch]$SkipTests, [string]$ReleaseName = ('ComfyBridge-0.4.1-windows-x64-' + (Get-Date -Format 'yyyyMMdd-HHmmss')), [string]$LegacyRelease = '')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -49,7 +49,7 @@ foreach ($sourceName in 'src','tests','scripts') {
     }
 }
 $buildInfo = @{
-    product='ComfyBridge'; version='0.4.0'; built_at=(Get-Date -Format 'o');
+    product='ComfyBridge'; version='0.4.1'; built_at=(Get-Date -Format 'o');
     uv_lock_sha256=(Get-FileHash -LiteralPath (Join-Path $root 'uv.lock') -Algorithm SHA256).Hash.ToLowerInvariant();
     ffmpeg_archive_sha256='c41df73a3f3259e81d5d53e6ce0c4c80b4841a30894fb77954650e445daa6c53';
     notes='Unsigned offline installer payload. No production API key, user data, reference audio or model weights included.'

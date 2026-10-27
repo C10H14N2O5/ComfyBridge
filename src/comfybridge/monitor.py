@@ -9,6 +9,7 @@ import time
 from .control import config_digest, get_status
 from .config import parse_json_strict
 from .console_input import ConsoleInput
+from .console_layout import confirm_lines, emit, kv_lines, rich_output, rule, section, title_block
 from .i18n import UIContext, safe_text
 
 
@@ -16,33 +17,42 @@ MESSAGES = {
     'title': ('ComfyBridge 实时监控', 'ComfyBridge Monitor'),
     'observer_notice': ('关闭窗口、Q 或 Ctrl-C 仅关闭监控，不会停止后台。', 'Closing this window, Q or Ctrl-C closes the observer, not the backend.'),
     'embedded_notice': ('0、Q 或 Ctrl-C 返回主菜单，不会停止后台。', '0, Q or Ctrl-C returns to the home menu without stopping the backend.'),
-    'backend': ('后台：{value}', 'Backend: {value}'),
+    'status_title': ('运行状态', 'Runtime status'),
+    'tasks_title': ('任务', 'Tasks'),
+    'label_backend': ('后台', 'Backend'),
+    'label_online': ('ComfyUI 连接', 'ComfyUI connection'),
+    'label_ready': ('语音服务就绪', 'Speech service ready'),
+    'label_draining': ('正在排空', 'Draining'),
+    'label_drained': ('已安全排空', 'Safely drained'),
+    'label_saved_config': ('已保存配置', 'Saved configuration'),
+    'label_restart': ('重启控制器', 'Restart controller'),
+    'label_restart_error': ('重启提示', 'Restart detail'),
+    'label_inflight': ('远端在途', 'Remote in flight'),
+    'label_waiting': ('本地等待', 'Waiting locally'),
+    'label_delivery': ('音频发送', 'Audio delivery'),
+    'label_slots': ('已占名额', 'Occupied slots'),
     'backend_confirmed': ('已验证连接', 'verified connection'),
     'backend_unknown': ('未确认连接（可能未运行或无法验证身份）；不会自动重启', 'connection unconfirmed (may be stopped or identity unavailable); no automatic restart'),
-    'online': ('ComfyUI 连接：{value}', 'ComfyUI connection: {value}'),
-    'ready': ('语音服务就绪：{value}', 'Speech service ready: {value}'),
-    'draining': ('正在排空：{value}', 'Draining: {value}'),
-    'drained': ('已安全排空：{value}', 'Safely drained: {value}'),
     'yes': ('是', 'yes'), 'no': ('否', 'no'), 'unknown': ('未知', 'unknown'),
     'connected': ('在线', 'online'), 'disconnected': ('离线', 'offline'),
-    'counts': ('任务：远端在途 {inflight}；本地等待 {waiting}；音频发送 {delivery}；已占名额 {slots}', 'Tasks: remote in flight {inflight}; waiting {waiting}; audio delivery {delivery}; occupied slots {slots}'),
-    'saved_config': ('已保存配置：{value}', 'Saved configuration: {value}'),
     'config_current': ('与运行配置一致', 'matches the running configuration'),
     'config_pending': ('等待重启生效', 'pending restart'),
     'config_invalid': ('缺失或无效，需要修复', 'missing or invalid; repair required'),
-    'restart': ('重启控制器：{value}', 'Restart controller: {value}'),
-    'restart_error': ('重启提示：{value}', 'Restart detail: {value}'),
-    'presets': ('音色预设：', 'Voice presets:'),
-    'preset': ('  {model} / {voice}：就绪 {ready}{reasons}', '  {model} / {voice}: ready {ready}{reasons}'),
-    'reasons': ('；原因：{value}', '; reason: {value}'),
+    'presets': ('音色预设（{count}）', 'Voice presets ({count})'),
+    'preset_ready': ('就绪', 'ready'),
+    'preset_not_ready': ('未就绪', 'not ready'),
+    'reason_line': ('      原因：{value}', '      Reason: {value}'),
+    'list_separator': ('、', ', '),
     'no_presets': ('尚无已登记预设；不能接收语音请求。', 'No presets registered; speech requests cannot be accepted.'),
-    'unresolved': ('未解决的远端任务：{count}', 'Unresolved remote tasks: {count}'),
-    'task': ('  {task_id}：{state}；调用端 {client}{reason}', '  {task_id}: {state}; client {client}{reason}'),
-    'more': ('  另有 {count} 项未显示。', '  {count} more entries not shown.'),
-    'logs': ('最近日志（仅安全元数据）：', 'Recent logs (safe metadata only):'),
+    'unresolved': ('未解决的远端任务（{count}）', 'Unresolved remote tasks ({count})'),
+    'task_detail': ('      状态：{state}；调用端：{client}', '      State: {state}; client: {client}'),
+    'more': ('  另有 {count} 项未显示', '  {count} more entries not shown'),
+    'logs': ('最近日志（仅安全元数据，最近 {count} 条）', 'Recent logs (safe metadata only, last {count})'),
     'no_logs': ('暂无可显示的日志。', 'No recent logs available.'),
     'log_omitted': ('无法识别的日志条目（详情已省略）', 'Unrecognized log entry (details omitted)'),
-    'controls': ('操作：', 'Actions:'),
+    'choice_prompt': ('请输入选项：', 'Select an option: '),
+    'confirm_yes': ('[1] 确认', '[1] Confirm'),
+    'confirm_no': ('[0] 取消（默认）', '[0] Cancel (default)'),
     'start_action': ('[1 / S] 启动或连接后台', '[1 / S] Start or attach backend'),
     'stop_action': ('[2 / X] 排空并停止后台', '[2 / X] Drain and stop backend'),
     'restart_action': ('[3 / R] 重启后台', '[3 / R] Restart backend'),
@@ -50,9 +60,12 @@ MESSAGES = {
     'force_action': ('[5 / F] 强制停止 Bridge（不停止远端任务）', '[5 / F] Force stop Bridge (remote tasks continue)'),
     'close_action': ('[0 / Q] 关闭监控', '[0 / Q] Close monitor'),
     'return_action': ('[0 / Q] 返回主菜单', '[0 / Q] Return to home menu'),
-    'stop_confirm': ('排空并停止后台？[1] 确认 / [0] 取消（Y/N）：', 'Drain and stop the backend? [1] Confirm / [0] Cancel (Y/N): '),
-    'force_confirm': ('仅强制停止 Bridge；远端任务可能继续，任务记录将保留。[1] 确认 / [0] 取消（Y/N）：', 'Force stop ONLY Bridge; remote tasks may continue and the journal is retained. [1] Confirm / [0] Cancel (Y/N): '),
-    'restart_confirm': ('排空并重启后台以应用已保存配置？独立控制器将在离开监控后继续执行。[1] 确认 / [0] 取消（Y/N，默认取消）：', 'Drain and restart the backend with the saved configuration? The independent controller continues after leaving the monitor. [1] Confirm / [0] Cancel (Y/N; default cancel): '),
+    'stop_confirm': ('排空并停止后台？\n  - 先拒绝新请求，再等待现有任务结束\n  - 仍可用 0/Q 独立离开监控',
+                     'Drain and stop the backend?\n  - New requests are rejected; existing work finishes first\n  - 0/Q still closes only this observer'),
+    'force_confirm': ('仅强制停止 Bridge？\n  - 远端任务可能继续\n  - 任务记录将保留\n  - 不清空队列，也不全局中断',
+                      'Force stop ONLY Bridge?\n  - Bridge stops, but remote tasks may continue\n  - The journal is retained\n  - No global queue clear or interrupt'),
+    'restart_confirm': ('排空并重启后台以应用已保存配置？\n  - 独立控制器将在离开监控后继续执行',
+                        'Drain and restart the backend with the saved configuration?\n  - The independent controller continues after leaving the monitor'),
     'started': ('后台已启动或已连接。', 'Backend started or attached.'),
     'stop_requested': ('已请求停止；仍可用 0/Q 独立离开监控。', 'Stop requested; 0/Q still closes only this observer.'),
     'restart_requested': ('已启动独立重启控制器；离开监控不会中止重启。', 'Independent restart controller started; leaving the monitor does not cancel it.'),
@@ -115,10 +128,12 @@ MESSAGES = {
     'field_elapsed_seconds': ('耗时秒', 'elapsed seconds'), 'field_queue_seconds': ('排队秒', 'queue seconds'),
     'field_generation_seconds': ('生成秒', 'generation seconds'), 'field_count': ('数量', 'count'),
     'field_pid': ('进程号', 'PID'), 'field_code': ('代码', 'code'), 'field_state': ('状态', 'state'),
-    'cache_title': ('模型空闲缓存清理：', 'Model idle-cache cleanup:'),
-    'cache_row': ('  {model}{voice}：{method}；等待 {seconds} 秒；剩余 {remaining} 秒', '  {model}{voice}: {method}; idle timeout {seconds}s; remaining {remaining}s'),
+    'cache_title': ('模型空闲缓存清理', 'Model idle-cache cleanup'),
+    'cache_row': ('  {model}{voice}', '  {model}{voice}'),
     'cache_voice': (' / 最近音色 {voice}', ' / last voice {voice}'),
-    'cache_detail': ('    状态：{state}{reason}', '    State: {state}{reason}'),
+    'cache_timing': ('      方式：{method}；等待 {seconds} 秒；剩余 {remaining} 秒',
+                     '      Method: {method}; idle timeout {seconds}s; remaining {remaining}s'),
+    'cache_detail': ('      状态：{state}', '      State: {state}'),
     'cache_method_free': ('/free 实例级卸载请求', '/free instance-wide unload request'),
     'cache_method_workflow': ('工作流 GPU 清理任务', 'workflow GPU cleanup task'),
     'cache_state_pending_idle': ('等待本地任务空闲', 'waiting for local work to become idle'),
@@ -206,7 +221,7 @@ def format_cache_status(rows, ui: UIContext) -> list[str]:
     """Closed schema: never echo text, arbitrary error/state/method strings or dicts."""
     if not isinstance(rows, list) or not rows:
         return []
-    lines = [ui.t(MESSAGES, 'cache_title')]
+    lines = section(ui.t(MESSAGES, 'cache_title'))
     for row in rows[:20]:
         if not isinstance(row, dict):
             continue
@@ -218,79 +233,126 @@ def format_cache_status(rows, ui: UIContext) -> list[str]:
         remaining = f'{remaining:.1f}' if type(remaining) in (int, float) and 0 <= remaining <= 86400 else '—'
         voice = _cache_identifier(row.get('voice'))
         lines.append(ui.t(MESSAGES, 'cache_row', model=_cache_identifier(row.get('model')),
-                          voice=ui.t(MESSAGES, 'cache_voice', voice=voice) if voice != '—' else '',
-                          method=method_text, seconds=seconds, remaining=remaining))
+                          voice=ui.t(MESSAGES, 'cache_voice', voice=voice) if voice != '—' else ''))
+        lines.append(ui.t(MESSAGES, 'cache_timing', method=method_text, seconds=seconds, remaining=remaining))
         state = row.get('state')
         if state == 'completed':
             # /free only acknowledges an instance-wide request. Even a malformed
             # completed state must never upgrade that to confirmed unloading.
             state = 'requested' if method == 'free' else ('completed' if method == 'workflow' else None)
-        state_text = _cache_value(state, ui, 'cache_state', _CACHE_STATES)
+        lines.append(ui.t(MESSAGES, 'cache_detail', state=_cache_value(state, ui, 'cache_state', _CACHE_STATES)))
         error = row.get('error_code')
-        reason = ui.t(MESSAGES, 'reasons', value=_cache_value(error, ui, 'code', _CACHE_ERRORS)) if error is not None else ''
-        lines.append(ui.t(MESSAGES, 'cache_detail', state=state_text, reason=reason))
+        if error is not None:
+            lines.append(ui.t(MESSAGES, 'reason_line', value=_cache_value(error, ui, 'code', _CACHE_ERRORS)))
     if len(rows) > 20:
         lines.append(ui.t(MESSAGES, 'more', count=len(rows) - 20))
     return lines
 
 
-def format_status(status: dict | None, ui: UIContext) -> list[str]:
-    """Present only recognized status fields; never serialize arbitrary status payloads."""
+def reason_text(code, ui: UIContext) -> str:
+    """Indented, allowlist-localized ``reason`` detail line for one error code."""
+    return ui.t(MESSAGES, 'reason_line', value=_localized_code(code, ui))
+
+
+def _split_status(status):
     state = status if isinstance(status, dict) else {}
     backend = state.get('backend', state)
-    backend = backend if isinstance(backend, dict) else {}
-    confirmed = any(type(backend.get(key)) is bool for key in ('ready', 'online', 'draining'))
-    lines = [ui.t(MESSAGES, 'backend', value=ui.t(MESSAGES, 'backend_confirmed' if confirmed else 'backend_unknown'))]
+    return state, backend if isinstance(backend, dict) else {}
+
+
+def _confirmed(backend: dict) -> bool:
+    return any(type(backend.get(key)) is bool for key in ('ready', 'online', 'draining'))
+
+
+def _backend_rows(backend: dict, ui: UIContext) -> list[tuple[str, str]]:
+    confirmed = _confirmed(backend)
+    rows = [(ui.t(MESSAGES, 'label_backend'), ui.t(MESSAGES, 'backend_confirmed' if confirmed else 'backend_unknown'))]
     if confirmed:
-        lines.extend([
-            ui.t(MESSAGES, 'online', value=_boolean(backend.get('online'), ui, connection=True)),
-            ui.t(MESSAGES, 'ready', value=_boolean(backend.get('ready'), ui)),
-            ui.t(MESSAGES, 'draining', value=_boolean(backend.get('draining'), ui)),
-            ui.t(MESSAGES, 'counts', **{key: _count(backend.get(key)) for key in ('inflight', 'waiting', 'delivery', 'slots')}),
-        ])
+        rows.append((ui.t(MESSAGES, 'label_online'), _boolean(backend.get('online'), ui, connection=True)))
+        rows.append((ui.t(MESSAGES, 'label_ready'), _boolean(backend.get('ready'), ui)))
+    return rows
+
+
+def _restart_rows(state: dict, ui: UIContext) -> list[tuple[str, str]]:
+    restart = state.get('restart')
+    if not isinstance(restart, dict):
+        return []
+    rows = [(ui.t(MESSAGES, 'label_restart'), _localized_code(restart.get('state'), ui, 'state'))]
+    if restart.get('error'):
+        rows.append((ui.t(MESSAGES, 'label_restart_error'), _localized_code(restart['error'], ui)))
+    return rows
+
+
+def overview_rows(status: dict | None, ui: UIContext) -> list[tuple[str, str]]:
+    """Compact backend/ComfyUI/readiness/restart rows shared by Monitor and the home menu."""
+    state, backend = _split_status(status)
+    return _backend_rows(backend, ui) + _restart_rows(state, ui)
+
+
+def format_status(status: dict | None, ui: UIContext) -> list[str]:
+    """Present only recognized status fields; never serialize arbitrary status payloads."""
+    state, backend = _split_status(status)
+    confirmed = _confirmed(backend)
+    rows = _backend_rows(backend, ui)
+    if confirmed:
+        rows.append((ui.t(MESSAGES, 'label_draining'), _boolean(backend.get('draining'), ui)))
         if 'drained' in backend:
-            lines.append(ui.t(MESSAGES, 'drained', value=_boolean(backend.get('drained'), ui)))
+            rows.append((ui.t(MESSAGES, 'label_drained'), _boolean(backend.get('drained'), ui)))
     config_keys = {'current': 'config_current', 'saved_pending_restart': 'config_pending', 'invalid_or_missing': 'config_invalid'}
     saved = state.get('saved_config')
     if isinstance(saved, str) and saved in config_keys:
-        lines.append(ui.t(MESSAGES, 'saved_config', value=ui.t(MESSAGES, config_keys[saved])))
-    restart = state.get('restart')
-    if isinstance(restart, dict):
-        lines.append(ui.t(MESSAGES, 'restart', value=_localized_code(restart.get('state'), ui, 'state')))
-        if restart.get('error'):
-            lines.append(ui.t(MESSAGES, 'restart_error', value=_localized_code(restart['error'], ui)))
+        rows.append((ui.t(MESSAGES, 'label_saved_config'), ui.t(MESSAGES, config_keys[saved])))
+    rows.extend(_restart_rows(state, ui))
+    lines = section(ui.t(MESSAGES, 'status_title')) + kv_lines(rows)
+    if confirmed:
+        lines.extend(section(ui.t(MESSAGES, 'tasks_title')))
+        lines.extend(kv_lines((ui.t(MESSAGES, 'label_' + key), _count(backend.get(key)))
+                              for key in ('inflight', 'waiting', 'delivery', 'slots')))
     presets = backend.get('presets')
     if isinstance(presets, list):
-        lines.append(ui.t(MESSAGES, 'presets' if presets else 'no_presets'))
+        lines.extend(section(ui.t(MESSAGES, 'presets', count=len(presets))))
+        if not presets:
+            lines.append('  ' + ui.t(MESSAGES, 'no_presets'))
+        entries = []
         for preset in presets[:20]:
             if not isinstance(preset, dict):
                 continue
+            ready = preset.get('ready')
+            ready = ui.t(MESSAGES, ('preset_ready' if ready else 'preset_not_ready') if type(ready) is bool else 'unknown')
             reasons = preset.get('reasons')
-            reasons = ', '.join(_localized_code(code, ui) for code in reasons[:8]) if isinstance(reasons, list) else ''
-            lines.append(ui.t(MESSAGES, 'preset', model=_label(preset.get('model')), voice=_label(preset.get('voice')),
-                              ready=_boolean(preset.get('ready'), ui),
-                              reasons=ui.t(MESSAGES, 'reasons', value=reasons) if reasons else ''))
+            reasons = ui.t(MESSAGES, 'list_separator').join(
+                _localized_code(code, ui) for code in reasons[:8]) if isinstance(reasons, list) else ''
+            entries.append(((_label(preset.get('model')) + ' / ' + _label(preset.get('voice')), ready), reasons))
+        for row_line, (_, reasons) in zip(kv_lines(row for row, _ in entries), entries):
+            lines.append(row_line)
+            if reasons:
+                lines.append(ui.t(MESSAGES, 'reason_line', value=reasons))
         if len(presets) > 20:
             lines.append(ui.t(MESSAGES, 'more', count=len(presets) - 20))
     lines.extend(format_cache_status(backend.get('cache'), ui))
     unresolved = backend.get('unresolved')
     if isinstance(unresolved, list):
-        lines.append(ui.t(MESSAGES, 'unresolved', count=len(unresolved)))
+        lines.extend(section(ui.t(MESSAGES, 'unresolved', count=len(unresolved))))
         for task in unresolved[:20]:
             if not isinstance(task, dict):
                 continue
+            lines.append('  ' + _label(task.get('task_id')))
+            lines.append(ui.t(MESSAGES, 'task_detail', state=_localized_code(task.get('state'), ui, 'state'),
+                              client=_localized_code(task.get('client_state'), ui, 'state')))
             code = task.get('error_code')
-            lines.append(ui.t(MESSAGES, 'task', task_id=_label(task.get('task_id')),
-                              state=_localized_code(task.get('state'), ui, 'state'),
-                              client=_localized_code(task.get('client_state'), ui, 'state'),
-                              reason=ui.t(MESSAGES, 'reasons', value=_localized_code(code, ui)) if code else ''))
+            if code:
+                lines.append(reason_text(code, ui))
         if len(unresolved) > 20:
             lines.append(ui.t(MESSAGES, 'more', count=len(unresolved) - 20))
     return lines
 
 
-def format_log_line(line: str, ui: UIContext) -> str:
-    """Read our structured log schema only, omitting unknown fields/raw messages."""
+def format_log_entry(line: str, ui: UIContext) -> list[str]:
+    """Two display lines per structured entry: ``time level event`` then metadata.
+
+    Reads our structured log schema only, omitting unknown fields/raw messages.
+    """
+    omitted = ['  ' + ui.t(MESSAGES, 'log_omitted')]
     try:
         if not isinstance(line, str) or len(line) > 4096:
             raise ValueError()
@@ -298,18 +360,19 @@ def format_log_line(line: str, ui: UIContext) -> str:
         if not isinstance(record, dict) or not isinstance(record.get('event'), str) or not _CODE.fullmatch(record['event']):
             raise ValueError()
     except ValueError:
-        return ui.t(MESSAGES, 'log_omitted')
+        return omitted
     cache_event = record['event'] in _CACHE_EVENTS
     if record['event'].startswith('cache_') and not cache_event:
-        return ui.t(MESSAGES, 'log_omitted')
-    parts = []
+        return omitted
+    head = []
     timestamp = record.get('time')
     if isinstance(timestamp, str) and re.fullmatch(r'[0-9TZ:+. -]{1,40}', timestamp):
-        parts.append(timestamp)
+        head.append(timestamp.replace('T', ' '))
     level_key = 'level_' + record.get('level', '') if isinstance(record.get('level', ''), str) else ''
     if level_key in MESSAGES:
-        parts.append(ui.t(MESSAGES, level_key))
-    parts.append(_localized_code(record['event'], ui, 'event'))
+        head.append(ui.t(MESSAGES, level_key))
+    head.append(_localized_code(record['event'], ui, 'event'))
+    parts = []
     for field in ('request_id', 'prompt_id', 'model', 'voice', 'input_length', 'elapsed_seconds',
                   'queue_seconds', 'generation_seconds', 'code', 'state', 'count', 'pid', 'instance_id'):
         value = record.get(field)
@@ -327,7 +390,10 @@ def format_log_line(line: str, ui: UIContext) -> str:
         else:
             continue
         parts.append(ui.t(MESSAGES, 'field_' + field) + '=' + value)
-    return ' | '.join(parts)
+    lines = ['  ' + '  '.join(head)]
+    if parts:
+        lines.append('      ' + '  '.join(parts))
+    return lines
 
 
 def tail_lines(path: Path, count: int = 50, max_bytes: int = 65536) -> list[str]:
@@ -421,7 +487,7 @@ def read_key() -> str | None:
 
 
 def monitor(data_dir: Path, *, ui: UIContext | None = None, return_to_menu: bool = False,
-            refresh: float = 2, log_lines: int = 50, key_reader=None, output=None, confirm=None, reader=None) -> int:
+            refresh: float = 2, log_lines: int = 10, key_reader=None, output=None, confirm=None, reader=None) -> int:
     from rich.console import Console
     from .launcher import ensure_backend, request_restart, request_stop
     ui = ui if ui is not None else UIContext()
@@ -429,10 +495,18 @@ def monitor(data_dir: Path, *, ui: UIContext | None = None, return_to_menu: bool
     key_reader = key_reader or reader.poll_key
     console = Console()
     clear_screen = output is None and console.is_terminal
-    output = output or (lambda text: console.print(text, markup=False, highlight=False))
+    output = output or rich_output(console)
     confirm = confirm or (lambda prompt: reader.ask(prompt).strip().lower() in ('1', 'y'))
     aliases = {'1': 's', '2': 'x', '3': 'r', '4': 'c', '5': 'f'}
     message_key = None
+
+    def confirmed(warning_key: str) -> bool:
+        # Warning lines and choices are output first; exactly one input follows.
+        for line in confirm_lines(ui.t(MESSAGES, warning_key), ui.t(MESSAGES, 'confirm_yes'),
+                                  ui.t(MESSAGES, 'confirm_no')):
+            output(line)
+        return confirm(ui.t(MESSAGES, 'choice_prompt'))
+
     try:
         while True:
             if clear_screen:
@@ -441,19 +515,24 @@ def monitor(data_dir: Path, *, ui: UIContext | None = None, return_to_menu: bool
                 state = monitor_snapshot(data_dir)
             except (OSError, ValueError, RuntimeError, TimeoutError):
                 state = None
-            output(ui.t(MESSAGES, 'title'))
+            for line in title_block(ui.t(MESSAGES, 'title')):
+                output(line)
             output(ui.t(MESSAGES, 'embedded_notice' if return_to_menu else 'observer_notice'))
             for line in format_status(state, ui):
                 output(line)
-            output(ui.t(MESSAGES, 'logs'))
+            for line in section(ui.t(MESSAGES, 'logs', count=log_lines)):
+                output(line)
             lines = tail_lines(data_dir / 'logs/comfybridge.log', log_lines)
             for line in lines:
-                output(format_log_line(line, ui))
+                for entry in format_log_entry(line, ui):
+                    output(entry)
             if not lines:
-                output(ui.t(MESSAGES, 'no_logs'))
+                output('  ' + ui.t(MESSAGES, 'no_logs'))
             if message_key:
-                output(ui.t(MESSAGES, message_key))
-            for key in ('controls', 'start_action', 'stop_action', 'restart_action', 'configure_action', 'force_action',
+                output('')
+                emit(output, ui.t(MESSAGES, message_key))
+            output(rule())
+            for key in ('start_action', 'stop_action', 'restart_action', 'configure_action', 'force_action',
                         'return_action' if return_to_menu else 'close_action'):
                 output(ui.t(MESSAGES, key))
             deadline = time.monotonic() + max(0.05, refresh)
@@ -469,14 +548,13 @@ def monitor(data_dir: Path, *, ui: UIContext | None = None, return_to_menu: bool
                             ensure_backend(data_dir)
                             message_key = 'started'
                         elif key in ('x', 'f'):
-                            warning = ui.t(MESSAGES, 'force_confirm' if key == 'f' else 'stop_confirm')
-                            if confirm(warning):
+                            if confirmed('force_confirm' if key == 'f' else 'stop_confirm'):
                                 request_stop(data_dir, force=key == 'f')
                                 message_key = 'stop_requested'
                             else:
                                 message_key = 'cancelled'
                         elif key == 'r':
-                            if confirm(ui.t(MESSAGES, 'restart_confirm')):
+                            if confirmed('restart_confirm'):
                                 request_restart(data_dir)
                                 message_key = 'restart_requested'
                             else:

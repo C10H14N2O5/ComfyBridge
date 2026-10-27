@@ -27,7 +27,7 @@ def snapshot(root: Path) -> dict[str, str]:
 
 
 def run_setup(executable: Path, commands: str, cwd: Path, env: dict, label: str,
-              reports: Path) -> subprocess.CompletedProcess:
+              reports: Path, *, language: str = '1') -> subprocess.CompletedProcess:
     # A onefile EXE has a bootstrap parent and worker. A plain subprocess timeout
     # kills only the parent, possibly leaving a worker and its inherited pipes alive.
     # Start suspended, assign our exact child tree to a private kill-on-close job,
@@ -44,7 +44,8 @@ def run_setup(executable: Path, commands: str, cwd: Path, env: dict, label: str,
     started = time.monotonic()
     process = thread = job = None
     with tempfile.TemporaryFile() as incoming, stdout_path.open('wb') as outgoing, stderr_path.open('wb') as errors:
-        incoming.write(commands.encode('utf-8'))
+        # Setup now requires an explicit session-language choice first.
+        incoming.write((language + '\n' + commands).encode('utf-8'))
         incoming.seek(0)
         handles = [msvcrt.get_osfhandle(stream.fileno()) for stream in (incoming, outgoing, errors)]
         for handle in handles:
@@ -101,6 +102,13 @@ def backup_names(directory: Path) -> set[str]:
     return {path.name for path in backups.iterdir() if path.is_dir()} if backups.exists() else set()
 
 
+def assert_one_new_backup(directory: Path, previous: set[str]) -> None:
+    """An upgrade adds one backup without removing backups copied from the old release."""
+    current = backup_names(directory)
+    assert previous <= current, 'legacy_backup_removed'
+    assert len(current - previous) == 1, 'legacy_expected_one_new_backup'
+
+
 def check_open_configurator(directory: Path, setup: Path, case: Path, reports: Path,
                             env: dict, elsewhere: Path, label: str) -> None:
     from packaged_smoke import cache_config
@@ -127,7 +135,7 @@ def check_open_configurator(directory: Path, setup: Path, case: Path, reports: P
             assert editor.poll() is None and log.stat().st_size > 0, 'editor_not_waiting'
             result = run_setup(setup, '2\n\n1\n0\n\n', elsewhere, env, label + '-busy', reports)
             text = result.stdout.decode('utf-8')
-            assert '重新检查' in text and 'Recheck' in text, 'busy_not_reported'
+            assert '重新检查' in text, 'busy_not_reported'
             assert backup_names(directory) == old_backups, 'busy_update_created_backup'
             assert (digest(receipt) if receipt.exists() else None) == old_receipt
         finally:
@@ -171,8 +179,19 @@ def main() -> int:
                               capture_output=True, env=env, cwd=elsewhere, timeout=30)
     assert selftest.returncode == 0
     diagnostic = json.loads(selftest.stdout)
-    assert diagnostic['ok'] is True and diagnostic['version'] == '0.4.0'
+    assert diagnostic['ok'] is True and diagnostic['version'] == '0.4.1'
     report['selftest'] = diagnostic
+    # Verify the real onefile Setup follows its English selection as well.
+    english = case / 'English 全新安装'
+    english_setup = put_setup(setup, english)
+    english_result = run_setup(english_setup, '1\n1\n0\n\n', elsewhere, env, 'install-english', reports, language='2')
+    assert english_result.returncode == 0, 'english_install_failed'
+    english_text = english_result.stdout.decode('utf-8').replace('\r\n', '\n')
+    assert '\n[1] Install\n' in english_text and '\n[1] 安装\n' not in english_text, 'setup_language_not_applied'
+    assert 'File installation and local self-test passed' in english_text
+    assert not (english / 'data/ui.json').exists(), 'setup_persisted_language'
+    assert_installed(english, release)
+    report['english_setup_install_and_session_only_language'] = True
     check_open_configurator(fresh, fresh_setup, case, reports, env, elsewhere, 'current')
     report['current_open_configurator_blocks_update'] = True
     sentinel = fresh / 'my-notes.txt'
@@ -220,13 +239,18 @@ def main() -> int:
             (external / 'runtime' / name).write_bytes(b'synthetic backup fixture, not an active SQLite database')
         (legacy / 'extra-user-file.txt').write_text('preserve\n', encoding='utf-8')
         before = snapshot(external)
+        old_legacy_backups = backup_names(legacy)
+        old_backup_contents = snapshot(legacy / 'backup') if old_legacy_backups else {}
         result = run_setup(legacy_setup, '2\n2\n' + str(external) + '\n1\n0\n\n',
                            elsewhere, env, 'legacy-update-external', reports)
         assert result.returncode == 0, 'legacy_update_failed'
         assert_installed(legacy, release)
         assert snapshot(external) == before
         assert (legacy / 'extra-user-file.txt').read_text(encoding='utf-8') == 'preserve\n'
-        assert len(backup_names(legacy)) == 1
+        assert_one_new_backup(legacy, old_legacy_backups)
+        current_backup_contents = snapshot(legacy / 'backup')
+        assert all(current_backup_contents.get(path) == checksum for path, checksum in old_backup_contents.items()), 'legacy_backup_content_changed'
+        report['legacy_existing_backups_preserved'] = True
         report['legacy_original_release'] = json.loads((legacy_source / 'BUILD-INFO.json').read_text(encoding='utf-8-sig'))['version']
         report['legacy_upgrade_external_data_unchanged'] = True
     # Never alter a non-product directory on mistaken Update/Install.

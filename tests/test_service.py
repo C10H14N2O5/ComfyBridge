@@ -615,6 +615,45 @@ async def test_disconnect_racing_with_result_cleans_instead_of_returning(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('force', [False, True])
+async def test_close_exits_maintenance_when_wait_consumes_a_cancellation(tmp_path, monkeypatch, force):
+    service, _ = make_service(tmp_path, monkeypatch)
+    original_wait_for = asyncio.wait_for
+    entered = asyncio.Event()
+    never = asyncio.Event()
+    consumed = False
+
+    async def raced_wait(awaitable, timeout=None):
+        nonlocal consumed
+        if asyncio.current_task().get_name() == 'bridge-maintenance' and not consumed:
+            # Model a cancellation/completed-wait race: one cancellation is
+            # consumed by the awaited operation, returning control to the loop.
+            awaitable.close()
+            entered.set()
+            try:
+                await never.wait()
+            except asyncio.CancelledError:
+                consumed = True
+                return None
+        return await original_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(asyncio, 'wait_for', raced_wait)
+    await service.start()
+    async with asyncio.timeout(2):
+        await entered.wait()
+    closing = asyncio.create_task(service.close(force=force))
+    done, _ = await asyncio.wait({closing}, timeout=0.5)
+    completed = bool(done)
+    if not completed:
+        # Exact test-owned task only: clean up before reporting a regression.
+        service._maintenance.cancel()
+    await closing
+    assert consumed
+    assert completed, 'shutdown maintenance loop required a second cancellation'
+    assert service._journal_closed
+
+
+@pytest.mark.asyncio
 async def test_cancellation_during_submit_does_not_cancel_post_or_release(tmp_path, monkeypatch):
     service, client = make_service(tmp_path, monkeypatch)
     entered = asyncio.Event()

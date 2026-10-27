@@ -108,9 +108,9 @@ def context(tmp_path):
     return setup.SetupContext(root, payload, manifest, executable)
 
 
-def run(context, answers, *, core=None):
+def run(context, answers, *, core=None, language='en-US'):
     core = core or FakeInstaller(context)
-    reader = ScriptedReader(answers)
+    reader = ScriptedReader([('1' if language == 'zh-CN' else '2'), *answers])
     lines = []
     result = setup.main([], context=context, installer_factory=lambda received: core,
                         reader=reader, output=lines.append)
@@ -195,13 +195,14 @@ def test_help_is_read_only_and_does_not_require_bundle():
     assert setup.main(['--help'], installer_factory=lambda _: pytest.fail('help instantiated installer'),
                       reader=ScriptedReader([]), output=lines.append) == 0
     assert 'Setup' in lines[0] and '目录' in lines[0]
+    assert len(lines) == 2 and 'Place Setup' in lines[1]
 
 
 def test_top_menu_enter_and_invalid_input_do_not_implicitly_install(context):
     result, core, _, text = run(context, ['', 'invalid', '0'])
     assert result == 0
     assert core.calls == ['recover', 'inspect']
-    assert '无效选项' in text and 'Invalid choice' in text
+    assert 'Invalid choice' in text
     assert not (context.root / 'ui.json').exists()
     assert not (context.root / 'config.json').exists()
 
@@ -215,10 +216,10 @@ def test_fresh_install_confirmation_and_default_backup_keep(context):
     assert core.calls[:2] == ['recover', 'inspect']
     assert len(core.results) == 1 and not core.deleted
     assert 'File installation and local self-test passed' in text
-    assert 'does not verify real TTS' in text
+    assert 'does not verify real tts' in text.lower()
     assert 'backend was not automatically started' in text
-    assert '完整内容' in text and 'full prior installation' in text
-    assert '以前的备份' in text and 'earlier backups' in text
+    assert 'full prior installation' in text
+    assert 'earlier backups' in text
     assert '_internal/modified.dll' in text
     assert 'PRIVATE-STAGE' not in text
     assert 'Press Enter to close' in reader.prompts[-1]
@@ -228,7 +229,7 @@ def test_fresh_install_confirmation_and_default_backup_keep(context):
 def test_install_confirmation_defaults_to_cancel(context, answer):
     result, core, _, text = run(context, ['1', answer, '0'])
     assert result == 0 and not core.results and not core.deleted
-    assert 'Cancelled' in text and '取消' in text
+    assert 'Cancelled' in text
 
 
 def test_update_default_data_backup_keep_transcript(context):
@@ -251,7 +252,7 @@ def test_external_data_is_absolute_backup_only_and_never_install_target(context,
     assert core.plans[0].root == context.root
     assert 'absolute path' in text
     assert 'does not change configuration, launch arguments or --data-dir' in text
-    assert '不会修改配置' in text
+    assert 'does not change configuration' in text
 
 
 @pytest.mark.parametrize('answers', [['2', '0', '0'], ['2', '2', '0', '0']])
@@ -263,7 +264,7 @@ def test_data_selection_cancel_prevents_plan(context, answers):
 def test_same_version_update_is_explicit_repair(context):
     result, core, _, text = run(context, ['2', '', '1', '0', ''], core=FakeInstaller(context, old_version='0.4.0'))
     assert result == 0 and core.plans[0].mode == 'repair'
-    assert 'versions are identical' in text and '不是普通升级' in text
+    assert 'versions are identical' in text and 'not a normal upgrade' in text
     assert 'Repair this same version' in text
 
 
@@ -277,7 +278,7 @@ def test_downgrade_rejected_by_core_never_executes(context):
     core.failures['plan'] = [CoreError('installer_downgrade')]
     result, core, _, text = run(context, ['2', '', ''], core=core)
     assert result == 1 and not core.results
-    assert 'Downgrades are not allowed' in text and '不允许降级' in text
+    assert 'Downgrades are not allowed' in text
     assert 'PRIVATE' not in text
 
 
@@ -296,7 +297,7 @@ def test_busy_recheck_does_not_kill_or_start_and_retries_same_safe_action(contex
     result, core, _, text = run(context, answers, core=core)
     assert result == 0 and len(core.results) == 1
     assert core.calls.count(method) >= 2
-    assert 'manually stop' in text and 'no process will be forcibly ended' in text
+    assert 'manually stop' in text and 'no process will be forcibly ended' in text.lower()
     assert 'PRIVATE' not in text
 
 
@@ -318,7 +319,7 @@ def test_recovery_precedes_menu_and_never_deletes_previous_backup(context, outco
     assert result == 0 and core.calls == ['recover', 'inspect']
     assert 'previous-transaction' in text
     assert not core.deleted and 'PRIVATE-OUTCOME' not in text
-    assert 'retained' in text and '保留' in text
+    assert 'retained' in text
 
 
 def test_delete_backup_only_exact_success_result_never_previous_recovery(context):
@@ -536,7 +537,7 @@ raise SystemExit(main([],context=context,installer_factory=lambda _:Fake()))
 '''
     environment = dict(os.environ, PYTHONPATH=str(Path(setup.__file__).resolve().parents[1]), PYTHONIOENCODING='utf-8')
     child = subprocess.run([sys.executable, '-c', code, str(context.root)], cwd=tmp_path,
-                           input=piped, capture_output=True, env=environment, timeout=8)
+                           input=b'2\n' + piped, capture_output=True, env=environment, timeout=8)
     assert child.returncode == 0, child.stderr
     assert child.stdout.count(b'OWN_EXECUTE_ONCE') == 1
     assert (b'OWN_DELETE_CURRENT_ONLY' in child.stdout) is delete
@@ -602,7 +603,7 @@ raise SystemExit(result)
     environment = dict(os.environ, PYTHONPATH=str(Path(setup.__file__).resolve().parents[1]),
                        PYTHONIOENCODING='cp936', PYTHONUTF8='0')
     input_file, output_file, error_file = (tmp_path / name for name in ('stdin.txt', 'stdout.txt', 'stderr.txt'))
-    transcript = f'2\n2\n{external}\n1\n\n' if action == 'external-update' else '0\n'
+    transcript = f'1\n2\n2\n{external}\n1\n\n' if action == 'external-update' else '1\n0\n'
     input_file.write_bytes(transcript.encode('utf-8'))
     with input_file.open('rb') as stdin, output_file.open('wb') as stdout, error_file.open('wb') as stderr:
         child = subprocess.run([sys.executable, '-c', code, str(context.root), action, str(external)],
@@ -620,3 +621,80 @@ raise SystemExit(result)
         assert 'ComfyBridge 离线安装程序' in text and str(context.root) in text
     if action == 'external-update':
         assert str(external) in text and '文件安装及本地自检已通过' in text
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+@pytest.mark.parametrize('mode,old,answers', [
+    ('install', None, ['1', '1', '0', '']),
+    ('update', '0.3.0', ['2', '', '1', '0', '']),
+    ('repair', '0.4.0', ['2', '', '1', '0', '']),
+])
+def test_language_first_install_update_repair_single_language(context, language, mode, old, answers):
+    from comfybridge.i18n import UIContext
+    core = FakeInstaller(context, old_version=old)
+    result, core, _, text = run(context, answers, core=core, language=language)
+    ui = UIContext(language)
+    other = UIContext('en-US' if language == 'zh-CN' else 'zh-CN')
+    assert result == 0 and core.plans[0].mode == mode
+    assert len(core.results) == 1 and not core.deleted
+    assert f"[1] {ui.t(setup.MESSAGES, 'install')}" in text
+    assert f"[1] {other.t(setup.MESSAGES, 'install')}" not in text
+    for key in ('backup_scope', 'stop_notice', 'success'):
+        assert all(line in text for line in ui.t(setup.MESSAGES, key).split('\n'))
+    assert '\n\n' + ui.t(setup.MESSAGES, 'plan_title') + '\n' + '-' * 48 in text
+    assert '[0] ' + ui.t(setup.MESSAGES, 'cancel') in text
+    assert not (context.root / 'ui.json').exists()
+    assert not (context.root / 'data/ui.json').exists()
+
+
+@pytest.mark.parametrize('answer', ['0', 'q', 'Q'])
+def test_language_exit_never_recovers_or_installs(context, answer):
+    core = FakeInstaller(context)
+    lines = []
+    assert setup.main([], context=context, installer_factory=lambda _: core,
+                      reader=ScriptedReader([answer]), output=lines.append) == 0
+    assert core.calls == []
+    assert '[1] 简体中文' in lines and '[2] English' in lines
+    assert '[0] 退出 / Exit' in lines
+
+
+@pytest.mark.parametrize('error', [EOFError, KeyboardInterrupt])
+def test_language_interruption_is_read_only_and_bilingual(context, error):
+    class Reader:
+        def ask(self, _):
+            raise error()
+    core = FakeInstaller(context)
+    lines = []
+    assert setup.main([], context=context, installer_factory=lambda _: core, reader=Reader(), output=lines.append) == 1
+    assert core.calls == []
+    assert any('操作已中断' in line for line in lines)
+    assert any('Operation interrupted' in line for line in lines)
+
+
+def test_language_has_no_implicit_default_and_never_reads_preferences(context):
+    data = context.root / 'data'
+    data.mkdir()
+    preference = data / 'ui.json'
+    original = b'PRIVATE-INVALID-PREFERENCE'
+    preference.write_bytes(original)
+    core = FakeInstaller(context)
+    lines = []
+    reader = ScriptedReader(['', 'invalid', '2', '0'])
+    assert setup.main([], context=context, installer_factory=lambda _: core, reader=reader, output=lines.append) == 0
+    assert sum('no default language' in line for line in lines) == 2
+    assert core.calls == ['recover', 'inspect']
+    assert preference.read_bytes() == original
+    assert not any('PRIVATE' in line for line in lines)
+    assert all('\n' not in line for line in lines)
+
+
+def test_setup_ui_does_not_import_business_configuration():
+    code = '''import sys
+from comfybridge.setup_launcher import main
+main(['--help'], output=lambda _: None)
+assert 'pydantic' not in sys.modules
+assert 'comfybridge.config' not in sys.modules
+assert 'comfybridge.ui_preferences' not in sys.modules
+'''
+    result = subprocess.run([sys.executable, '-c', code], capture_output=True, timeout=8)
+    assert result.returncode == 0, result.stderr

@@ -343,3 +343,13 @@ def test_actual_devnull_never_counts_as_interactive():
         timeout=10, check=False,
     )
     assert completed.returncode == 0
+
+
+@pytest.mark.parametrize('language_choice', ['1', '2'])
+def test_language_selection_uses_title_block_and_separate_invalid_preference_lines(tmp_path, language_choice):
+    (tmp_path / 'ui.json').write_bytes(b'invalid')
+    lines = []
+    resolve_ui(tmp_path, interactive=True, ask=choices(language_choice), output=lines.append)
+    assert lines[:2] == ['界面语言偏好无法读取，请重新选择。', 'Could not read UI preferences; choose a language.']
+    assert lines[2:5] == ['', '选择界面语言 / Choose interface language', '-' * 48]
+    assert all('\n' not in line for line in lines)

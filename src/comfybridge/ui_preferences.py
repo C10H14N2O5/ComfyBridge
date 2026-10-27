@@ -11,6 +11,7 @@ from pydantic import field_validator
 
 from .config import StrictModel, confined_path, parse_json_strict, _staged_file
 from .i18n import UIContext
+from .console_layout import emit, title_block
 from .platform_windows import AlreadyRunning, InstanceLock
 
 MAX_PREFERENCE_BYTES = 4096
@@ -23,8 +24,8 @@ MESSAGES = {
     "prompt": ("请选择 / Select: ", "请选择 / Select: "),
     "invalid_choice": ("无效选择，请重试。 / Invalid selection; please try again.",
                        "无效选择，请重试。 / Invalid selection; please try again."),
-    "invalid_preferences": ("界面语言偏好无法读取，请重新选择。 / Could not read UI preferences; choose a language.",
-                            "界面语言偏好无法读取，请重新选择。 / Could not read UI preferences; choose a language."),
+    "invalid_preferences": ("界面语言偏好无法读取，请重新选择。\nCould not read UI preferences; choose a language.",
+                            "界面语言偏好无法读取，请重新选择。\nCould not read UI preferences; choose a language."),
     "session_only": ("语言仅对本次会话生效；未能保存界面偏好。", "Language applies to this session only; UI preferences could not be saved."),
 }
 
@@ -126,7 +127,8 @@ def select_language(data_dir: Path, ui: UIContext, *, ask=input, output=print,
     The ui lock is held only by save_ui_preferences, never during interactive input.
     """
     try:
-        output(ui.t(MESSAGES, "choose_language"))
+        for line in title_block(ui.t(MESSAGES, "choose_language")):
+            output(line)
         output(ui.t(MESSAGES, "chinese"))
         output(ui.t(MESSAGES, "english"))
         if allow_cancel:
@@ -167,7 +169,7 @@ def resolve_ui(data_dir: Path, *, interactive: bool, ask=input, output=print) ->
     ui = UIContext()
     if interactive:
         if invalid:
-            output(ui.t(MESSAGES, "invalid_preferences"))
+            emit(output, ui.t(MESSAGES, "invalid_preferences"))
         if not select_language(data_dir, ui, ask=ask, output=output, allow_cancel=False):
             raise EOFError("ui_language_selection_aborted")
     return ui
