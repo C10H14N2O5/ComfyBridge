@@ -7,11 +7,12 @@ from pathlib import Path
 import uuid
 
 from .platform_windows import InstanceLock
+from .console_layout import bullets, confirm_lines, kv_lines, plain_output, section as layout_section, split_lines, title_block
 from .i18n import UIContext, safe_text
 
 
 MESSAGES = {
-    'invalid_fields': ('请修正以下配置字段：{details}', 'Correct these configuration fields: {details}'),
+    'invalid_fields': ('请修正以下配置字段：', 'Correct these configuration fields:'),
     'workflow_error': ('配置或工作流校验失败：{code}。请检查绑定和模板，或导出 API 格式 JSON。', 'Configuration/workflow validation: {code}. Check bindings/template or export API JSON.'),
     'missing_file': ('所需配置或模板文件不存在。请先配置，或选择已有 JSON 文件。', 'Required configuration/template file missing. Configure first or select an existing JSON file.'),
     'permission_error': ('数据目录不可写或无法保护。请指定当前用户可写的 --data-dir；不会自动换目录。', 'Data directory is not writable/private. Choose a current-user writable --data-dir; no automatic fallback.'),
@@ -54,7 +55,14 @@ MESSAGES = {
     'listen_host': ('监听地址', 'Listen host'),
     'listen_port': ('监听端口', 'Listen port'),
     'comfy_url': ('ComfyUI 地址', 'ComfyUI URL'),
-    'security_note': ('业务密钥仅授权语音调用；管理通道仍为私有回环地址。不会修改防火墙。', 'Business key grants TTS access only. Admin remains private loopback. Firewall unchanged.'),
+    'security_note': ('安全说明：\n'
+                      '  - 业务密钥仅授权语音调用\n'
+                      '  - 管理通道仍只使用私有回环地址\n'
+                      '  - 不会修改 Windows 防火墙',
+                      'Security notes:\n'
+                      '  - The business key grants TTS access only\n'
+                      '  - Administration stays on a private loopback address\n'
+                      '  - Windows Firewall is not changed'),
     'settings': ('设置类别', 'Settings category'),
     'limits': ('请求、队列、时限与音频限额', 'Request, queue, timeout and audio limits'),
     'logging': ('日志轮转设置', 'Rotating log settings'),
@@ -72,10 +80,35 @@ MESSAGES = {
     'idle_method': ('明确选择定时丢弃方式', 'Explicitly select the idle-release method'),
     'idle_free': ('ComfyUI /free：请求实例级卸载', 'ComfyUI /free: request instance-wide unloading'),
     'idle_workflow': ('工作流：运行一次短文本清理任务', 'Workflow: run a short-text cleanup task'),
-    'idle_free_warning': ('此方式会请求卸载整个 ComfyUI 实例的模型，可能影响其他工作流和用户；只在远端队列为空时请求，但无法锁定其他客户端。请求被受理不证明显存已释放。仅保存配置不会立即发送请求。确认启用？', 'This requests model unloading across the entire ComfyUI instance and may affect other workflows/users. It only requests while the remote queue is empty, but cannot lock other clients. Acceptance does not prove VRAM was freed. Saving settings sends no request now. Enable this method?'),
-    'idle_workflow_warning': ('此方式在空闲到期后会提交真实 GPU 工作流，并可能在 ComfyUI 保留音频产物；使用该模型最后一次提交的音色预设，同一模型下所有音色必须共享可释放的缓存。清理工作流完成也不证明显存已释放。仅保存配置不会运行生成。确认启用？', 'After the idle timeout this method submits a real GPU workflow and may leave audio artifacts in ComfyUI. It uses the last submitted preset; all voices of this model must share a releasable cache. Workflow completion does not prove VRAM was freed. Saving settings runs no generation. Enable this method?'),
+    'idle_free_warning': ('ComfyUI /free 会请求卸载整个实例的模型：\n'
+                          '  - 可能影响其他工作流和用户\n'
+                          '  - 只在远端队列为空时请求，但无法锁定其他客户端\n'
+                          '  - 请求被受理不证明显存已释放\n'
+                          '  - 仅保存配置不会立即发送请求\n'
+                          '确认启用？',
+                          'ComfyUI /free requests model unloading across the entire instance:\n'
+                          '  - It may affect other workflows and users\n'
+                          '  - It only requests while the remote queue is empty, but cannot lock other clients\n'
+                          '  - Acceptance does not prove VRAM was freed\n'
+                          '  - Saving settings sends no request now\n'
+                          'Enable this method?'),
+    'idle_workflow_warning': ('工作流方式会在空闲到期后提交一次真实 GPU 工作流：\n'
+                              '  - 可能在 ComfyUI 保留音频产物\n'
+                              '  - 使用该模型最后一次提交的音色预设\n'
+                              '  - 同一模型下所有音色必须共享可释放的缓存\n'
+                              '  - 清理工作流完成也不证明显存已释放\n'
+                              '  - 仅保存配置不会运行生成\n'
+                              '确认启用？',
+                              'After the idle timeout, this method submits one real GPU workflow:\n'
+                              '  - It may leave audio artifacts in ComfyUI\n'
+                              '  - It uses the last submitted preset of this model\n'
+                              '  - All voices of this model must share a releasable cache\n'
+                              '  - Workflow completion does not prove VRAM was freed\n'
+                              '  - Saving settings runs no generation\n'
+                              'Enable this method?'),
     'idle_text': ('清理任务短文本（1–64 字符；留空保留）', 'Cleanup task text (1–64 characters; blank keeps current)'),
-    'idle_summary': ('    空闲 {seconds} 秒后；方式：{method}', '    After {seconds} idle seconds; method: {method}'),
+    'idle_summary': ('空闲 {seconds} 秒后；方式：{method}', 'After {seconds} idle seconds; method: {method}'),
+    'idle_not_vram_proof': ('请求受理或清理任务完成均不证明显存已释放。', 'Request acceptance or cleanup completion does not prove VRAM was freed.'),
     'idle_release_settings_required': ('定时丢弃必须设置等待秒数和明确选择清理方式。', 'Idle release requires settings and an explicitly selected method.'),
     'idle_release_settings_not_applicable': ('非定时丢弃策略不能保留定时清理设置。', 'Other cache policies cannot retain idle-release settings.'),
     'invalid_idle_release_text': ('清理文本必须为 1–64 字符且不能全为空白；请勿包含控制字符。', 'Cleanup text must contain 1–64 characters and must not be blank or contain control characters.'),
@@ -87,7 +120,12 @@ MESSAGES = {
     'cache_cleanup_seed_schema': ('远端节点必须提供兼容的 INT seed 输入。', 'The remote node must expose a compatible INT seed input.'),
     'cache_cleanup_seed_range': ('远端 seed 输入必须支持完整的 0–4294967295 范围。', 'The remote seed input must support the complete 0–4294967295 range.'),
     'workflow_file': ('工作流 JSON 文件（修改时留空保留旧模板；0 返回）：', 'Workflow JSON file (blank retains old template when editing; 0 returns): '),
-    'import_note': ('只复制 JSON，不复制参考音频或模型文件；不会执行生成。', 'Import copies JSON only, not reference audio/model assets. No generation will run.'),
+    'import_note': ('导入说明：\n'
+                    '  - 只复制 JSON，不复制参考音频或模型文件\n'
+                    '  - 不会执行生成',
+                    'Import notes:\n'
+                    '  - Only the JSON is copied, not reference audio or model files\n'
+                    '  - No generation will run'),
     'select_text': ('明确选择文本注入字段', 'Explicitly select text injection field'),
     'select_output': ('明确选择最终音频输出节点', 'Explicitly select final audio output node'),
     'select_cache': ('明确选择缓存控制绑定', 'Explicitly select cache binding'),
@@ -95,11 +133,28 @@ MESSAGES = {
     'apply_preset': ('将此预设变更应用到草稿？', 'Apply this preset change to the draft?'),
     'confirm_delete_model': ('删除此模型及其全部预设？', 'Delete this model and ALL its presets?'),
     'confirm_delete_preset': ('删除此预设登记（保留不可变 JSON 文件）？', 'Delete this registration (keep immutable JSON files)?'),
-    'invalid_existing': ('现有配置无效。将从空草稿修复；明确保存前不会修改原文件，保存时会备份。', 'Existing configuration is invalid. Repair starts with an empty draft; the original stays until explicitly saved with backup.'),
+    'invalid_existing': ('现有配置无效，将从空草稿开始修复：\n'
+                         '  - 明确保存前不会修改原文件\n'
+                         '  - 保存时会先备份原文件',
+                         'Existing configuration is invalid; repair starts from an empty draft:\n'
+                         '  - The original file stays unchanged until you explicitly save\n'
+                         '  - Saving backs up the original file first'),
     'not_saved': ('未保存配置。请修正草稿；没有执行生成。', 'No configuration saved. Correct the draft; no generation was run.'),
-    'save_note': ('只校验和保存：不执行生成、不热加载、不重启、不修改登录启动。', 'Validate/save only: no generation, no hot reload, no restart, no Startup changes.'),
+    'save_note': ('只校验和保存，不会：\n'
+                  '  - 执行生成\n'
+                  '  - 热加载或重启后台\n'
+                  '  - 修改登录自启动',
+                  'Validate and save only; this does not:\n'
+                  '  - run any generation\n'
+                  '  - hot-reload or restart the backend\n'
+                  '  - change login startup'),
     'confirm_save': ('保存此已校验配置？', 'Save this validated configuration?'),
-    'external_change': ('配置已被外部修改，拒绝覆盖。草稿未写入；请退出后重新打开编辑器。', 'Configuration changed externally; refusing to overwrite. Draft not written; exit and reopen the editor.'),
+    'external_change': ('配置已被外部修改，拒绝覆盖：\n'
+                        '  - 草稿未写入\n'
+                        '  - 请退出后重新打开编辑器',
+                        'Configuration changed externally; refusing to overwrite:\n'
+                        '  - The draft was not written\n'
+                        '  - Exit and reopen the editor'),
     'saved_current': ('已保存／当前运行配置一致。', 'Saved / current running configuration matches.'),
     'saved_pending': ('已保存／待启动后台或明确重启后生效。', 'Saved / pending backend start or explicit restart.'),
     'dirty': ('草稿有未保存的更改。', 'The draft has unsaved changes.'),
@@ -111,7 +166,7 @@ MESSAGES = {
     'deferred': ('尚未登记可用音色预设，语音服务未就绪；可稍后添加模型和预设。', 'No voice preset is registered; TTS is not ready. Add models and presets later.'),
     'first_cancel_save': ('尚未保存；可继续修正草稿，或返回并明确放弃。', 'Not saved; continue correcting the draft, or return and explicitly discard it.'),
     'empty': ('（暂无）', '(none)'),
-    'redacted': ('已隐藏', '[redacted]'),
+    'key_set': ('已设置（隐藏）', 'set (hidden)'),
     'key_label': ('业务密钥', 'Business key'),
     'template': ('模板', 'Template'),
     'text_binding': ('文本绑定', 'Text binding'),
@@ -183,7 +238,7 @@ def diagnostic(error: Exception, ui=None) -> str:
             location = '.'.join(str(part) for part in parts) if safe_location else 'configuration'
             kind = item['type'] if item['type'] in _DIAGNOSTIC_TYPES else 'invalid_value'
             details.append(f'{location or "configuration"}: {kind}')
-        return ui.t(MESSAGES, 'invalid_fields', details='; '.join(details))
+        return '\n'.join([ui.t(MESSAGES, 'invalid_fields'), *bullets(details)])
     if isinstance(error, (ConfigError, WorkflowError)):
         code = str(error)
         if code in _WORKFLOW_DIAGNOSTICS:
@@ -206,6 +261,82 @@ def summary(config) -> dict:
     data = config.model_dump(mode='json') if hasattr(config, 'model_dump') else copy.deepcopy(config)
     data.setdefault('server', {})['api_key'] = '[redacted]'
     return data
+
+
+_POLICIES = ('inherit', 'keep', 'release', 'idle_release')
+
+
+def _binding_text(value, ui) -> str:
+    if isinstance(value, dict):
+        value = str(value.get('node_id', '')) + '.' + str(value.get('field', ''))
+    return safe_text(value) if value is not None else ui.t(MESSAGES, 'empty')
+
+
+def _idle_detail(idle, ui) -> str:
+    method = idle.get('method')
+    seconds = idle.get('seconds')
+    seconds = seconds if type(seconds) is int and 1 <= seconds <= 86400 else '—'
+    method = ui.t(MESSAGES, 'idle_' + method) if method in ('free', 'workflow') else ui.t(MESSAGES, 'empty')
+    return ui.t(MESSAGES, 'idle_summary', seconds=seconds, method=method)
+
+
+def summary_lines(data, ui, section: str | None = None) -> list[str]:
+    """Redacted, sectioned configuration summary without a page title.
+
+    Never shows the business key, cleanup text or raw limit field identifiers.
+    """
+    from .config import LimitsConfig, LoggingConfig
+    original = data.model_dump(mode='json') if hasattr(data, 'model_dump') else data
+    original = original if isinstance(original, dict) else {}
+    server = original.get('server')
+    has_key = isinstance(server, dict) and bool(server.get('api_key'))
+    data = summary(original)
+    t = lambda key, **values: ui.t(MESSAGES, key, **values)
+    empty = t('empty')
+    lines: list[str] = []
+    if section in (None, 'server'):
+        server = data.get('server') if isinstance(data.get('server'), dict) else {}
+        comfy = data.get('comfyui') if isinstance(data.get('comfyui'), dict) else {}
+        lines += layout_section(t('server_title'))
+        lines += kv_lines([
+            (t('listen_host'), safe_text(server.get('listen_host', empty))),
+            (t('listen_port'), safe_text(server.get('listen_port', empty))),
+            (t('key_label'), t('key_set') if has_key else empty),
+            (t('comfy_url'), safe_text(comfy.get('base_url', empty))),
+        ])
+    if section in (None, 'models'):
+        lines += layout_section(t('models_title'))
+        models = [item for item in data.get('models') or [] if isinstance(item, dict)]
+        policies = [item.get('cache_policy', 'inherit') for item in models]
+        rows = [(safe_text(item.get('id', '')), t(policy) if isinstance(policy, str) and policy in _POLICIES else '—')
+                for item, policy in zip(models, policies)]
+        for item, line in zip(models, kv_lines(rows)):
+            lines.append(line)
+            if item.get('cache_policy') == 'idle_release' and isinstance(item.get('idle_release'), dict):
+                # Cleanup text is private configuration content; never include it.
+                lines.append('      ' + _idle_detail(item['idle_release'], ui))
+                lines.append('      ' + t('idle_not_vram_proof'))
+        if not models:
+            lines.append('  ' + empty)
+    if section in (None, 'presets'):
+        lines += layout_section(t('presets_title'))
+        presets = [item for item in data.get('presets') or [] if isinstance(item, dict)]
+        for preset in presets:
+            lines.append('  ' + safe_text(preset.get('model', '')) + ' / ' + safe_text(preset.get('voice', '')))
+            rows = [(t(label), _binding_text(preset.get(key), ui))
+                    for key, label in (('template', 'template'), ('text_binding', 'text_binding'),
+                                       ('audio_output_node', 'output_binding'), ('cache_binding', 'cache_binding'))
+                    if key in preset]
+            lines += kv_lines(rows, indent=6)
+        if not presets:
+            lines.append('  ' + empty)
+    if section in (None, 'limits'):
+        for group, model in (('limits', LimitsConfig), ('logging', LoggingConfig)):
+            values = data.get(group) if isinstance(data.get(group), dict) else {}
+            defaults = model().model_dump(mode='json')
+            lines += layout_section(t(group))
+            lines += kv_lines([(t(key), safe_text(values.get(key, defaults[key]))) for key in model.model_fields])
+    return lines
 
 
 def validate_draft(data_dir: Path, draft: dict):
@@ -343,7 +474,7 @@ class Wizard:
         self.secret = secret or getpass.getpass
         # Builtin print treats markup literally. Injected Rich renderers must also
         # use markup=False; every external value is sanitized before rendering.
-        self.output = output or print
+        self.output = output or plain_output()
 
     def t(self, key: str, **values) -> str:
         return self.ui.t(MESSAGES, key, **values)
@@ -351,13 +482,23 @@ class Wizard:
     def say(self, text: str):
         self.output(safe_text(text, max_length=4096))
 
+    def say_lines(self, lines):
+        # Every logical line is sanitized separately; no output contains a newline.
+        for line in lines:
+            self.say(line)
+
+    def say_message(self, key: str, **values):
+        self.say_lines(split_lines(self.t(key, **values)))
+
     def error(self, error: Exception):
-        self.say(diagnostic(error, self.ui))
+        self.say('')
+        self.say_lines(split_lines(diagnostic(error, self.ui)))
 
     def choose(self, label: str, choices: list[tuple]):
         if not choices:
             raise ValueError('no_candidates')
-        self.say(label)
+        self.say('')
+        self.say_lines(split_lines(label))
         for number, (_, description) in enumerate(choices, 1):
             self.say(f'[{number}] {safe_text(description)}')
         self.say('[0] ' + self.t('return_menu'))
@@ -370,9 +511,7 @@ class Wizard:
             self.say(self.t('invalid_selection'))
 
     def confirm(self, key: str) -> bool:
-        self.say(self.t(key))
-        self.say('[1] ' + self.t('confirm_yes'))
-        self.say('[0] ' + self.t('confirm_no'))
+        self.say_lines(confirm_lines(self.t(key), '[1] ' + self.t('confirm_yes'), '[0] ' + self.t('confirm_no')))
         while True:
             answer = self.ask(self.t('action')).strip().lower()
             if answer in ('1', 'y', 'yes'):
@@ -398,6 +537,7 @@ class Wizard:
     def server(self, draft: dict):
         from .config import ServerConfig, ComfyConfig
         existing = draft.get('server', {})
+        self.say_lines(layout_section(self.t('server_title')))
         while True:
             key = self.secret(self.t('business_key')) or existing.get('api_key', '')
             try:
@@ -413,7 +553,8 @@ class Wizard:
                          str, lambda value: ComfyConfig(base_url=value))
         draft['server'] = ServerConfig(api_key=key, listen_host=host, listen_port=port).model_dump(mode='json')
         draft['comfyui'] = ComfyConfig(base_url=url).model_dump(mode='json')
-        self.say(self.t('security_note'))
+        self.say('')
+        self.say_message('security_note')
 
     def limits(self, draft: dict):
         from .config import LimitsConfig, LoggingConfig
@@ -450,52 +591,17 @@ class Wizard:
         put_model(draft, name, policy, replace=old, idle_release=idle)
 
     def show_preset(self, preset: dict):
-        self.say(f"{self.t('model_id')}: {safe_text(preset.get('model', ''))}")
-        self.say(f"{self.t('voice_id')}: {safe_text(preset.get('voice', ''))}")
-        for key, label in (('template', 'template'), ('text_binding', 'text_binding'),
-                           ('audio_output_node', 'output_binding'), ('cache_binding', 'cache_binding')):
-            if key not in preset:
-                continue
-            value = preset[key]
-            if isinstance(value, dict):
-                value = str(value.get('node_id', '')) + '.' + str(value.get('field', ''))
-            self.say(f"  {self.t(label)}: {safe_text(value if value is not None else self.t('empty'))}")
+        rows = [(self.t('model_id'), safe_text(preset.get('model', ''))),
+                (self.t('voice_id'), safe_text(preset.get('voice', '')))]
+        rows += [(self.t(label), _binding_text(preset[key], self.ui))
+                 for key, label in (('template', 'template'), ('text_binding', 'text_binding'),
+                                    ('audio_output_node', 'output_binding'), ('cache_binding', 'cache_binding'))
+                 if key in preset]
+        self.say('')
+        self.say_lines(kv_lines(rows))
 
     def show_summary(self, draft: dict, section: str | None = None):
-        data = summary(draft)
-        self.say(self.t('summary'))
-        if section in (None, 'server'):
-            server = data.get('server', {})
-            for key in ('listen_host', 'listen_port'):
-                self.say(f"{self.t(key)}: {safe_text(server.get(key, self.t('empty')))}")
-            self.say(self.t('key_label') + ': ' + self.t('redacted'))
-            self.say(self.t('comfy_url') + ': ' + safe_text(data.get('comfyui', {}).get('base_url', self.t('empty'))))
-        if section in (None, 'models'):
-            self.say(self.t('models_title'))
-            for item in data.get('models', []):
-                self.say(f"  {safe_text(item['id'])}: {self.t(item.get('cache_policy', 'inherit'))}")
-                if item.get('cache_policy') == 'idle_release' and isinstance(item.get('idle_release'), dict):
-                    idle = item['idle_release']
-                    method = idle.get('method')
-                    seconds = idle.get('seconds')
-                    seconds = seconds if type(seconds) is int and 1 <= seconds <= 86400 else '—'
-                    self.say(self.t('idle_summary', seconds=seconds,
-                                    method=self.t('idle_' + method) if method in ('free', 'workflow') else self.t('empty')))
-                    # Cleanup text is private config content; never include it in summaries.
-            if not data.get('models'):
-                self.say(self.t('empty'))
-        if section in (None, 'presets'):
-            self.say(self.t('presets_title'))
-            for preset in data.get('presets', []):
-                self.show_preset(preset)
-            if not data.get('presets'):
-                self.say(self.t('empty'))
-        if section in (None, 'limits'):
-            from .config import LimitsConfig, LoggingConfig
-            for group, model in (('limits', LimitsConfig), ('logging', LoggingConfig)):
-                self.say(self.t(group))
-                for key, value in {**model().model_dump(mode='json'), **data.get(group, {})}.items():
-                    self.say(f'  {self.t(key)}: {value}')
+        self.say_lines(title_block(self.t('summary')) + summary_lines(draft, self.ui, section))
 
     def preset(self, draft: dict, *, edit: bool = False):
         from .config import validate_identifier
@@ -511,7 +617,8 @@ class Wizard:
                 break
             except (ValueError, OSError) as error:
                 self.error(error)
-        self.say(self.t('import_note'))
+        self.say('')
+        self.say_message('import_note')
         while True:
             text = self.choose(self.t('select_text'), binding_choices(graph))
             output_node = self.choose(self.t('select_output'), node_choices(graph))
@@ -536,23 +643,28 @@ class Wizard:
         config = validate_draft(self.data_dir, draft)
         self.show_summary(draft)
         if not config.presets:
+            self.say('')
             self.say(self.t('deferred'))
-        self.say(self.t('save_note'))
+        self.say('')
+        self.say_message('save_note')
         if not self.confirm('confirm_save'):
             return None
         path = self.data_dir / 'config.json'
         current = path.read_bytes() if path.exists() else None
         if current != original:
-            self.say(self.t('external_change'))
+            self.say('')
+            self.say_message('external_change')
             return 1
         save_config(self.data_dir, config)
         status = get_status(self.data_dir)
+        self.say('')
         self.say(self.t('saved_current' if status and status.get('config_digest') == config_digest(config) else 'saved_pending'))
         return 0
 
     def return_from_editor(self, draft: dict, baseline: dict, original: bytes | None) -> int | None:
         if draft == baseline:
             return 1
+        self.say('')
         self.say(self.t('dirty'))
         for key, label in (('1', 'dirty_save'), ('2', 'dirty_discard'), ('0', 'dirty_continue')):
             self.say(f'[{key}] {self.t(label)}')
@@ -576,8 +688,10 @@ class Wizard:
             'limits': [('1', 'summary'), ('2', 'edit_limits')],
         }
         options = dict(maps[section] + [('s', 'save_menu'), ('0', 'return_menu')])
-        self.say(self.t(section + '_title' if section else 'editor_title'))
+        self.say_lines(title_block(self.t(section + '_title' if section else 'editor_title')))
         for key, label in options.items():
+            if key in ('s', '0'):
+                self.say('')
             self.say(f'[{key.upper()}] {self.t(label)}')
         return options
 
@@ -595,11 +709,11 @@ class Wizard:
                 valid_existing = True
             except (ValueError, OSError) as error:
                 if original is not None:
-                    self.say(self.t('invalid_existing'))
+                    self.say_message('invalid_existing')
                     self.error(error)
             baseline = copy.deepcopy(draft)
             if first_run:
-                self.say(self.t('first_title'))
+                self.say_lines(title_block(self.t('first_title')))
             if first_run or not valid_existing:
                 self.server(draft)
             if first_run:

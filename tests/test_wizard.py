@@ -560,7 +560,7 @@ def test_fourth_strategy_full_bilingual_save_without_remote_calls(tmp_path, lang
     assert '[4] ' + ui.t(MESSAGES, 'idle_release') in io.messages
     for index, key in enumerate(('inherit', 'keep', 'release'), 1):
         assert f'[{index}] ' + ui.t(MESSAGES, key) in io.messages
-    assert ui.t(MESSAGES, 'idle_' + method + '_warning') in io.messages
+    assert all(line in io.messages for line in ui.t(MESSAGES, 'idle_' + method + '_warning').split('\n'))
     rendered = '\n'.join(io.messages)
     assert 'private-cleanup-text' not in rendered
     assert 'never-print-this-key' not in rendered
@@ -701,3 +701,58 @@ def test_unknown_pydantic_error_type_is_not_echoed(language):
     assert 'synthetic_private_type' not in result
     assert 'private-message' not in result and 'private-cleanup-text' not in result
     assert 'models.0.idle_release.text: invalid_value' in result
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+def test_shared_summary_localizes_labels_and_never_displays_private_content(tmp_path, language):
+    from comfybridge.config import LimitsConfig, LoggingConfig
+    from comfybridge.wizard import summary_lines
+    data = draft()
+    put_model(data, 'm', 'idle_release', idle_release={'method': 'free', 'seconds': 300, 'text': 'PRIVATE-CLEANUP'})
+    ui = UIContext(language)
+    lines = summary_lines(data, ui)
+    text = '\n'.join(lines)
+    for model in (LimitsConfig, LoggingConfig):
+        for field in model.model_fields:
+            assert ui.t(MESSAGES, field) in text
+            assert field not in text
+    assert ui.t(MESSAGES, 'key_set') in text
+    assert ui.t(MESSAGES, 'idle_not_vram_proof') in text
+    assert 'PRIVATE' not in text and 'never-print-this-key' not in text
+    for heading in ('server_title', 'models_title', 'presets_title', 'limits', 'logging'):
+        index = lines.index(ui.t(MESSAGES, heading))
+        assert lines[index - 1] == ''
+    assert all('\n' not in line for line in lines)
+    original = copy.deepcopy(data)
+    summary_lines(data, ui)
+    assert data == original
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+def test_wizard_title_confirmation_and_trusted_multiline_output(tmp_path, language):
+    ui = UIContext(language)
+    io = ScriptedIO([''])
+    wizard = Wizard(tmp_path, ui=ui, **io.options())
+    wizard.menu('models')
+    assert io.messages[:3] == ['', ui.t(MESSAGES, 'models_title'), '-' * 48]
+    assert io.messages[io.messages.index('[S] ' + ui.t(MESSAGES, 'save_menu')) - 1] == ''
+    before = len(io.messages)
+    assert not wizard.confirm('idle_workflow_warning')
+    warning = io.messages[before:]
+    assert warning == ['', *ui.t(MESSAGES, 'idle_workflow_warning').split('\n'),
+                       '[1] ' + ui.t(MESSAGES, 'confirm_yes'), '[0] ' + ui.t(MESSAGES, 'confirm_no')]
+    wizard.say('external\nlabel\x1b[31m')
+    assert io.messages[-1] == 'externallabel'
+    assert all('\n' not in line for line in io.messages)
+
+
+def test_multiple_validation_errors_are_separate_safe_bullets():
+    from pydantic import ValidationError
+    error = ValidationError.from_exception_data('Synthetic', [
+        {'type': 'string_type', 'loc': ('server', 'api_key'), 'input': 'PRIVATE'},
+        {'type': 'int_type', 'loc': ('server', 'listen_port'), 'input': 'PRIVATE'},
+    ])
+    lines = diagnostic(error).split('\n')
+    assert len(lines) == 3
+    assert lines[1:] == ['  - server.api_key: string_type', '  - server.listen_port: int_type']
+    assert 'PRIVATE' not in '\n'.join(lines)

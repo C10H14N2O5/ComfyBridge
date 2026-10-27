@@ -12,11 +12,27 @@ import sys
 from typing import Callable
 
 from .console_input import ConsoleInput
+from .console_layout import confirm_lines, emit, kv_lines, plain_output, section, title_block
 from .i18n import UIContext, safe_text
 
 
 MESSAGES = {
     'title': ('ComfyBridge 离线安装程序', 'ComfyBridge Offline Setup'),
+    'language_title': ('选择界面语言', 'Choose interface language'),
+    'language_exit': ('[0] 退出 / Exit', '[0] 退出 / Exit'),
+    'language_prompt': ('请选择 / Select: ', '请选择 / Select: '),
+    'language_invalid': ('请选择 1、2 或 0；语言没有默认值。', 'Choose 1, 2 or 0; there is no default language.'),
+    'plan_title': ('安装计划', 'Installation plan'),
+    'notice_title': ('继续前请注意', 'Before proceeding'),
+    'scope_title': ('备份范围', 'Backup scope'),
+    'modified_title': ('本地修改的受管理文件', 'Locally modified managed files'),
+    'label_target': ('安装位置', 'Installation location'),
+    'label_old_version': ('已有版本', 'Existing version'),
+    'label_new_version': ('新版本', 'New version'),
+    'label_data': ('此次备份数据目录', 'Data directory for this backup'),
+    'label_backup': ('此次事务备份', 'This transaction backup'),
+    'label_code': ('错误代码', 'Error code'),
+    'cancel_plain': ('取消', 'Cancel'),
     'install': ('安装', 'Install'),
     'update': ('更新', 'Update'),
     'exit': ('退出', 'Exit'),
@@ -27,20 +43,20 @@ MESSAGES = {
     'new_version': ('新版本：{version}', 'New version: {version}'),
     'not_installed': ('未安装', 'not installed'),
     'unknown': ('未知', 'unknown'),
-    'root_notice': ('安装位置固定为 Setup 可执行文件所在目录；不会使用当前工作目录或临时解包目录', 'The target is the Setup executable directory, not the current working directory or temporary extraction directory'),
-    'stop_notice': ('继续前请手动停止 ComfyBridge 后台，并关闭全部 Monitor、主菜单及相关程序窗口；Setup 不会替您停止任何进程', 'Before proceeding, manually stop the ComfyBridge backend and close every Monitor, home-menu and related program window; Setup never stops processes for you'),
+    'root_notice': ('  - 安装位置固定为 Setup 可执行文件所在目录\n  - 不会使用当前工作目录或临时解包目录', '  - The target is the Setup executable directory\n  - Not the current working directory or temporary extraction directory'),
+    'stop_notice': ('  - 继续前请手动停止 ComfyBridge 后台\n  - 关闭全部 Monitor、主菜单及相关程序窗口\n  - Setup 不会替您停止任何进程', '  - Before proceeding, manually stop the ComfyBridge backend\n  - Close every Monitor, home-menu and related program window\n  - Setup never stops processes for you'),
     'fresh_notice': ('首次安装目录必须为空，仅可保留当前 Setup 文件', 'A fresh installation directory must be empty except for this Setup file'),
     'data_menu': ('请选择此次备份的数据目录', 'Choose the data directory to back up for this transaction'),
     'data_default': ('相邻 data 目录（默认；回车选择）', 'Adjacent data directory (default; Enter selects)'),
     'data_external': ('另选外部绝对路径（仅用于备份）', 'Choose an external absolute path (backup only)'),
     'cancel': ('取消（默认）', 'Cancel (default)'),
-    'external_notice': ('外部目录仅决定此次备份范围，不会修改配置、启动参数或 --data-dir；原有启动方式保持不变', 'An external directory changes only this backup scope; it does not change configuration, launch arguments or --data-dir. Existing launch behavior is unchanged'),
+    'external_notice': ('外部目录只决定此次备份范围\n  - 不会修改配置、启动参数或 --data-dir\n  - 原有启动方式保持不变', 'An external directory changes only this backup scope\n  - It does not change configuration, launch arguments or --data-dir\n  - Existing launch behavior is unchanged'),
     'external_path': ('请输入已有数据目录的绝对路径（0 取消）', 'Enter the absolute path of the existing data directory (0 cancels)'),
     'absolute_required': ('必须输入不含控制字符的绝对路径；不会自动改为其他目录', 'An absolute path without control characters is required; no directory is substituted automatically'),
     'data_path': ('此次备份数据目录：{path}', 'Data directory backed up in this transaction: {path}'),
     'backup_path': ('此次事务备份：{path}', 'This transaction backup: {path}'),
     'backup_none': ('此次没有可删除的备份', 'There is no backup to delete for this transaction'),
-    'backup_scope': ('备份范围为原安装目录的完整内容及所选数据目录；不包含 Setup 本身、安装事务状态和以前的备份。未选择的外部目录不在此次备份范围内', 'Backup scope is the full prior installation directory and the selected data directory, excluding Setup itself, installer transaction state and earlier backups. Unselected external directories are outside this backup'),
+    'backup_scope': ('  - 备份原安装目录的完整内容及所选数据目录\n  - 不包含 Setup 本身、安装事务状态和以前的备份\n  - 未选择的外部目录不在此次备份范围内', '  - Includes the full prior installation directory and the selected data directory\n  - Excludes Setup itself, installer transaction state and earlier backups\n  - Unselected external directories are outside this backup'),
     'modified': ('以下受管理文件有本地修改；更新前会备份，替换或保留规则见提示：', 'The following managed files have local modifications; they are backed up before update and the replacement/retention notices apply:'),
     'modified_none': ('没有检测到受管理文件的本地修改', 'No local modifications of managed files were detected'),
     'more': ('另有 {count} 项未显示', '{count} more entries are not shown'),
@@ -50,7 +66,7 @@ MESSAGES = {
     'confirm_repair': ('已了解同版本修复会重写受管理文件，确认修复？', 'Repair this same version, acknowledging that managed files will be rewritten?'),
     'confirm': ('确认', 'Confirm'),
     'cancelled': ('已取消，未发起新的安装或更新', 'Cancelled; no new installation/update was started'),
-    'busy': ('检测到程序仍在运行或无法安全确认已关闭。请手动停止后台并关闭所有界面，再重新检查；不会强制结束进程', 'A program is still running, or safe closure cannot be confirmed. Manually stop the backend and close all interfaces, then recheck; no process will be forcibly ended'),
+    'busy': ('检测到程序仍在运行，或无法安全确认已关闭\n  - 请手动停止后台并关闭所有界面，再重新检查\n  - 不会强制结束进程', 'A program is still running, or safe closure cannot be confirmed\n  - Please manually stop the backend and close all interfaces, then recheck\n  - No process will be forcibly ended'),
     'recheck': ('重新检查', 'Recheck'),
     'recovering': ('正在检查上次中断的安装事务', 'Checking for an interrupted installation transaction'),
     'recovered': ('已恢复上次中断的安装事务；原有事务备份已保留', 'Recovered the interrupted installation transaction; its backup was retained'),
@@ -58,9 +74,9 @@ MESSAGES = {
     'recovery_rolled_back': ('已回滚中断的事务，恢复原有文件；备份已保留', 'The interrupted transaction was rolled back and original files restored; the backup was retained'),
     'recovery_committed': ('已核对完成的安装事务并完成恢复检查；备份已保留', 'The completed installation transaction was checked and recovery finalized; the backup was retained'),
     'starting': ('正在执行已确认的本地安装事务，请勿关闭此窗口', 'Executing the confirmed local installation transaction; do not close this window'),
-    'success': ('文件安装及本地自检已通过；这不代表已验证真实 TTS 业务或 GPU 生成', 'File installation and local self-test passed; this does not verify real TTS business requests or GPU generation'),
+    'success': ('文件安装及本地自检已通过\n  - 这不代表已验证真实 TTS 业务或 GPU 生成', 'File installation and local self-test passed\n  - This does not verify real TTS business requests or GPU generation'),
     'no_autostart': ('后台未自动启动；可稍后手动打开 ComfyBridge', 'The backend was not automatically started; open ComfyBridge manually when ready'),
-    'delete_question': ('是否删除刚完成的这一次事务备份？只会删除下方所示备份，不会清理其他备份', 'Delete only the backup from this completed transaction? Only the backup shown below is affected; other backups are not cleared'),
+    'delete_question': ('是否删除刚完成的这一次事务备份？\n  - 只会删除下方所示备份\n  - 不会清理其他备份', 'Delete only the backup from this completed transaction?\n  - Only the backup shown below is affected\n  - Other backups are not cleared'),
     'delete_yes': ('是，仅删除此次备份', 'Yes, delete only this backup'),
     'delete_no': ('否，保留备份（默认）', 'No, keep the backup (default)'),
     'backup_kept': ('此次备份已保留', 'This backup was retained'),
@@ -188,28 +204,60 @@ def _code(error: BaseException) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _bilingual(key: str, **values) -> list[str]:
+    return [UIContext(language).t(MESSAGES, key, **values) for language in ('zh-CN', 'en-US')]
+
+
 class SetupConsole:
     def __init__(self, context: SetupContext, installer, *, reader=None, output=None):
         self.context = context
         self.installer = installer
         self.reader = reader or ConsoleInput()
-        self.output = output or print  # no Rich markup interpretation
-        self.zh, self.en = UIContext('zh-CN'), UIContext('en-US')
+        self.output = output or plain_output()  # no Rich markup interpretation
+        self.ui = UIContext('en-US')
         self._progress_state: tuple[str, int, int] | None = None
         self._selected_data: Path | None = None
         self._last_plan = None
 
     def t(self, key: str, **values) -> str:
-        return self.zh.t(MESSAGES, key, **values) + ' / ' + self.en.t(MESSAGES, key, **values)
+        return self.ui.t(MESSAGES, key, **values)
+
+    def lines(self, lines):
+        for line in lines:
+            self.output(line)
 
     def say(self, key: str, **values):
-        self.output(self.t(key, **values))
+        emit(self.output, self.t(key, **values))
+
+    def result(self, key: str):
+        self.output('')
+        self.say(key)
 
     def option(self, number: str, key: str):
         self.output(f'[{number}] {self.t(key)}')
 
+    def choose_language(self) -> bool:
+        # Session-only, before ANY inspection or recovery. Never access ui.json.
+        self.lines(title_block(' / '.join(_bilingual('title'))))
+        self.lines(_bilingual('language_title'))
+        self.output('[1] 简体中文')
+        self.output('[2] English')
+        self.output(self.t('language_exit'))
+        while True:
+            answer = self.reader.ask(self.t('language_prompt')).strip().lower()
+            if answer in ('0', 'q'):
+                return False
+            if answer in ('1', '2'):
+                self.ui.set_language('zh-CN' if answer == '1' else 'en-US')
+                return True
+            self.lines(_bilingual('language_invalid'))
+
     def ask(self, key: str = 'select') -> str:
-        return self.reader.ask(self.t(key) + ': ').strip()
+        punctuation = '：' if self.ui.language == 'zh-CN' else ': '
+        return self.reader.ask(self.t(key) + punctuation).strip()
+
+    def path_row(self, key: str, value):
+        return self.t(key), safe_text(value, max_length=1024) if isinstance(value, (str, Path)) else self.t('unknown')
 
     def pause(self):
         try:
@@ -219,21 +267,18 @@ class SetupConsole:
 
     def error(self, error: BaseException):
         code = _code(error)
-        self.say(_ERROR_KEYS.get(code, 'error_generic'))
-        if code in _ERROR_KEYS:
-            self.say('error_code', code=code)
-        # Only paths from our approved context/plan, never arbitrary exception
-        # text or metadata that might contain configuration contents/secrets.
-        self.show_path('target', self.context.root)
+        self.result(_ERROR_KEYS.get(code, 'error_generic'))
+        rows = [(self.t('label_code'), code)] if code in _ERROR_KEYS else []
+        # Only approved context/plan paths, never arbitrary exception metadata.
+        rows.append(self.path_row('label_target', self.context.root))
         if self._selected_data is not None:
-            self.show_path('data_path', self._selected_data)
+            rows.append(self.path_row('label_data', self._selected_data))
         if self._last_plan is not None and self._last_plan.backup_dir is not None:
-            self.show_path('backup_path', self._last_plan.backup_dir)
+            rows.append(self.path_row('label_backup', self._last_plan.backup_dir))
+        self.lines(kv_lines(rows))
 
     def confirm(self, key: str) -> bool:
-        self.say(key)
-        self.option('1', 'confirm')
-        self.option('0', 'cancel')
+        self.lines(confirm_lines(self.t(key), '[1] ' + self.t('confirm'), '[0] ' + self.t('cancel')))
         while True:
             try:
                 answer = self.ask().lower()
@@ -252,9 +297,7 @@ class SetupConsole:
             except Exception as error:
                 if _code(error) not in _BUSY_CODES:
                     raise
-                self.say('busy')
-                self.option('1', 'recheck')
-                self.option('0', 'cancel')
+                self.lines(confirm_lines(self.t('busy'), '[1] ' + self.t('recheck'), '[0] ' + self.t('cancel')))
                 while True:
                     try:
                         answer = self.ask().lower()
@@ -266,21 +309,22 @@ class SetupConsole:
                         break
                     self.say('invalid')
 
-    def show_version(self, key: str, value):
+    def version_value(self, value) -> str:
         if value is None:
-            value = self.t('not_installed')
-        elif not isinstance(value, str) or len(value) > 80 or not _VERSION.fullmatch(value):
-            value = self.t('unknown')
-        self.say(key, version=value)
+            return self.t('not_installed')
+        if not isinstance(value, str) or len(value) > 80 or not _VERSION.fullmatch(value):
+            return self.t('unknown')
+        return value
 
     def show_path(self, key: str, value):
-        self.say(key, path=safe_text(value, max_length=1024) if isinstance(value, (str, Path)) else self.t('unknown'))
+        labels = {'target': 'label_target', 'data_path': 'label_data', 'backup_path': 'label_backup'}
+        self.lines(kv_lines([self.path_row(labels[key], value)]))
 
     def select_data(self) -> Path:
-        self.say('data_menu')
+        self.lines(section(self.t('data_menu')))
         self.option('1', 'data_default')
         self.option('2', 'data_external')
-        self.option('0', 'cancel')
+        self.option('0', 'cancel_plain')
         while True:
             answer = self.ask().lower()
             if answer in ('', '1'):
@@ -300,14 +344,19 @@ class SetupConsole:
 
     def show_plan(self, plan):
         self._last_plan = plan
-        self.show_path('target', plan.root)
-        self.show_version('old_version', plan.old_version)
-        self.show_version('new_version', plan.new_version)
-        self.show_path('data_path', plan.data_dir)
-        self.show_path('backup_path', plan.backup_dir)
+        self.lines(title_block(self.t('plan_title')))
+        self.lines(kv_lines([
+            self.path_row('label_target', plan.root),
+            (self.t('label_old_version'), self.version_value(plan.old_version)),
+            (self.t('label_new_version'), self.version_value(plan.new_version)),
+            self.path_row('label_data', plan.data_dir),
+            self.path_row('label_backup', plan.backup_dir),
+        ]))
+        self.lines(section(self.t('scope_title')))
         self.say('backup_scope')
         modified = plan.managed_modified
         if modified:
+            self.lines(section(self.t('modified_title')))
             self.say('modified')
             for path in modified[:100]:
                 self.output('  ' + (safe_text(path, max_length=1024) if isinstance(path, (str, Path)) else self.t('unknown')))
@@ -326,6 +375,7 @@ class SetupConsole:
                 self.say(warning)
             else:
                 self.say('warning_unknown')
+        self.lines(section(self.t('notice_title')))
         self.say('stop_notice')
         if plan.mode == 'repair':
             self.say('same_version')
@@ -347,12 +397,13 @@ class SetupConsole:
         if state == self._progress_state:
             return  # at most stage changes and roughly ten percent boundaries
         self._progress_state = state
-        self.output(f'{self.t(key)} [{completed}/{total}]')
+        self.output(f'  {self.t(key)} [{completed}/{total}]')
 
     def backup_decision(self, result):
         if result.backup_dir is None:
             self.say('backup_none')
             return
+        self.output('')
         self.say('delete_question')
         self.show_path('backup_path', result.backup_dir)
         self.option('1', 'delete_yes')
@@ -378,11 +429,19 @@ class SetupConsole:
             self.say('invalid')
 
     def run(self) -> int:
-        self.say('title')
+        try:
+            if not self.choose_language():
+                return 0
+        except (EOFError, KeyboardInterrupt):
+            self.lines(_bilingual('interrupted'))
+            return 1
+        self.lines(title_block(self.t('title')))
         self.show_path('target', self.context.root)
         self.say('root_notice')
+        self.lines(section(self.t('notice_title')))
         self.say('stop_notice')
         try:
+            self.output('')
             self.say('recovering')
             recovery = self.with_recheck(self.installer.recover)
             outcome = getattr(recovery, 'outcome', None)
@@ -393,9 +452,13 @@ class SetupConsole:
             if recovery.recovered and recovery.backup_dir is not None:
                 self.show_path('backup_path', recovery.backup_dir)
             inspection = self.with_recheck(self.installer.inspect)
-            self.show_version('old_version', inspection.installed_version)
-            self.show_version('new_version', inspection.target_version)
+            self.output('')
+            self.lines(kv_lines([
+                (self.t('label_old_version'), self.version_value(inspection.installed_version)),
+                (self.t('label_new_version'), self.version_value(inspection.target_version)),
+            ]))
             while True:
+                self.output('')
                 self.option('1', 'install')
                 self.option('2', 'update')
                 self.option('0', 'exit')
@@ -422,11 +485,11 @@ class SetupConsole:
                     if not self.confirm(key):
                         self.say('cancelled')
                         continue
-                    self.say('starting')
+                    self.result('starting')
                     result = self.with_recheck(lambda: self.installer.execute(plan, progress=self.progress))
                     if result.selftest_passed is not True:
                         raise SetupUIError('installer_selftest_failed')
-                    self.say('success')
+                    self.result('success')
                     self.say('no_autostart')
                     self.backup_decision(result)
                     self.pause()
@@ -476,10 +539,11 @@ def main(argv: list[str] | None = None, *, context: SetupContext | None = None,
     """No target-selection CLI. Explicit dependency injection is for source tests."""
     _configure_stdio()
     reader = reader or ConsoleInput()
-    output = output or print
+    output = output or plain_output()
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments in (['--help'], ['-h']):
-        output(UIContext('zh-CN').t(MESSAGES, 'help') + ' / ' + UIContext().t(MESSAGES, 'help'))
+        for text in _bilingual('help'):
+            emit(output, text)
         return 0
     try:
         if arguments:
@@ -488,15 +552,19 @@ def main(argv: list[str] | None = None, *, context: SetupContext | None = None,
         installer = (installer_factory or _core_factory)(context)
     except Exception as error:
         key = _ERROR_KEYS.get(_code(error), 'error_generic')
-        zh, en = UIContext('zh-CN'), UIContext()
-        output(zh.t(MESSAGES, key) + ' / ' + en.t(MESSAGES, key))
+        for text in _bilingual(key):
+            emit(output, text)
         code = _code(error)
         if code in _ERROR_KEYS:
-            output(zh.t(MESSAGES, 'error_code', code=code) + ' / ' + en.t(MESSAGES, 'error_code', code=code))
+            for text in _bilingual('error_code', code=code):
+                output(text)
         if context is not None:
-            output(zh.t(MESSAGES, 'target', path=context.root) + ' / ' + en.t(MESSAGES, 'target', path=context.root))
+            for text in _bilingual('target', path=context.root):
+                output(text)
+        for text in _bilingual('pause'):
+            output(text)
         try:
-            reader.ask(zh.t(MESSAGES, 'pause') + ' / ' + en.t(MESSAGES, 'pause') + ': ')
+            reader.ask('请选择 / Select: ')
         except (EOFError, KeyboardInterrupt):
             pass
         return 2 if arguments else 1

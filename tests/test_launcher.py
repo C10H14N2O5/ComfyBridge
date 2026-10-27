@@ -312,3 +312,37 @@ def test_real_detached_offline_lifecycle(tmp_path):
                     owned.terminate()  # exact owned Popen handle only, never PID lookup
                     owned.wait(timeout=10)
         offline.close()
+
+
+@pytest.mark.parametrize('force', [False, True])
+def test_cli_confirmation_is_separate_from_prompt_and_blank_cancels(tmp_path, monkeypatch, capsys, force):
+    from types import SimpleNamespace
+    prompts = []
+    monkeypatch.setattr('comfybridge.console_input.ConsoleInput', lambda: SimpleNamespace(
+        ask=lambda prompt: prompts.append(prompt) or ''))
+    monkeypatch.setattr(launcher, 'request_stop', lambda *_a, **_k: pytest.fail('blank confirmation must cancel'))
+    command = ['stop', '--data-dir', str(tmp_path)] + (['--force'] if force else [])
+    assert launcher.main(command) == 1
+    output = capsys.readouterr().out.splitlines()
+    assert '[1] Confirm' in output and '[0] Cancel (default)' in output
+    assert prompts == ['Select an option: ']
+    if force:
+        assert '  - Remote tasks may continue' in output
+        assert '  - The journal is retained' in output
+
+
+@pytest.mark.parametrize('kind,key', [('start', 'local_failure'), ('locked', 'locked'), ('identity', 'identity')])
+def test_specific_lifecycle_errors_do_not_add_generic_diagnostic(tmp_path, monkeypatch, capsys, kind, key):
+    from comfybridge.control import ControlError
+    from comfybridge.platform_windows import AlreadyRunning
+    from comfybridge.i18n import UIContext
+    error = {'start': launcher.LocalStartFailure, 'locked': AlreadyRunning, 'identity': ControlError}[kind]
+    def fail(_):
+        raise error('PRIVATE')
+    monkeypatch.setattr(launcher, 'ensure_backend', fail)
+    monkeypatch.setattr('comfybridge.ui_preferences.is_interactive', lambda: False)
+    (tmp_path / 'config.json').write_text('{}', encoding='utf-8')
+    assert launcher.main(['start', '--data-dir', str(tmp_path)]) == 1
+    output = capsys.readouterr().err
+    assert UIContext().t(launcher.MESSAGES, key) in output
+    assert 'PRIVATE' not in output and 'Invalid selection' not in output

@@ -263,8 +263,9 @@ def test_home_idle_cache_summary_shows_settings_without_cleanup_text(tmp_path, m
     instance.summary()
     text = '\n'.join(output)
     assert 'idle-model' in text and '123' in text
-    assert instance.t('idle_' + method) in text
-    assert instance.t('idle_not_vram_proof') in text
+    from comfybridge.wizard import MESSAGES as WIZARD_MESSAGES
+    assert instance.ui.t(WIZARD_MESSAGES, 'idle_' + method) in text
+    assert instance.ui.t(WIZARD_MESSAGES, 'idle_not_vram_proof') in text
     assert 'PRIVATE-CLEANUP-TEXT' not in text
     assert 'never-print-this-business-key' not in text
     assert '"idle_release"' not in text
@@ -283,4 +284,21 @@ def test_actual_idle_editor_save_requires_separate_default_cancel_restart(tmp_pa
     saved = load_config(tmp_path)
     assert saved.models[0].idle_release.method == 'free'
     assert saved.models[0].idle_release.seconds == 300
-    assert instance.t('apply_restart') in output
+    assert all(line in output for line in instance.t('apply_restart').split('\n'))
+
+
+@pytest.mark.parametrize('language', ['zh-CN', 'en-US'])
+def test_home_header_and_shared_summary_layout(tmp_path, monkeypatch, language):
+    from comfybridge.wizard import summary_lines
+    config = settings(tmp_path)
+    instance, lines = home(tmp_path, monkeypatch, language=language, status={
+        'config_digest': config_digest(config), 'ready': True, 'online': True, 'draining': False})
+    instance.render()
+    assert lines[0] == '' and lines[2] == '-' * 48
+    assert lines[-1] == '-' * 48
+    assert all('\n' not in line for line in lines)
+    lines.clear()
+    instance.summary()
+    expected = summary_lines(config.model_dump(mode='json'), instance.ui)
+    assert lines[-len(expected):] == expected
+    assert 'never-print-this' not in '\n'.join(lines)

@@ -150,7 +150,9 @@ class BridgeService:
     async def _maintain(self):
         next_probe = time.monotonic() + self.config.limits.probe_interval
         try:
-            while True:
+            # Cancellation can race a completed wait. The closed flag must also
+            # terminate this loop so close() cannot hang on the maintenance task.
+            while not self._closed:
                 self._dispatch()
                 if time.monotonic() >= next_probe:
                     await self._probe()

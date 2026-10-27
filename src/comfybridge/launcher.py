@@ -13,6 +13,7 @@ import sys
 import time
 import uuid
 
+from .console_layout import confirm_lines, plain_output
 from .control import ControlClient, ControlError, config_digest, get_status, new_identity, publish_identity, remove_identity, create_control_app
 from .platform_windows import AlreadyRunning, InstanceLock, atomic_private_json, private_runtime, protect_path, spawn_detached
 
@@ -337,12 +338,20 @@ def parse_arguments(argv: list[str] | None = None):
 
 
 MESSAGES = {
-    'confirm': ('确认管理操作？[1/Y] 确认，[0/回车] 取消：', 'Confirm administrative operation? [1/Y] Yes, [0/Enter] Cancel: '),
-    'force': ('仅强制停止 Bridge；远端任务可能继续，账本保留。[1/Y] 确认，[0/回车] 取消：', 'Force stops Bridge only; remote tasks may continue, journal retained. [1/Y] Confirm, [0/Enter] Cancel: '),
-    'restart': ('独立重启控制进程已启动；可以关闭管理窗口，不代表重启已经完成。', 'Independent restart controller started; monitor may be closed. Restart is not yet confirmed complete.'),
-    'local_failure': ('后台本地启动失败：检查端口冲突和音频工具，可从主菜单的服务设置修复配置。', 'Backend local startup failed: check port conflicts and audio tools; repair settings from the main menu.'),
-    'locked': ('本数据目录有其他操作正在进行。请检查状态或旧版窗口，不要删除运行文件。', 'Another operation owns this data directory. Check status or the old-version window; do not delete runtime files.'),
-    'identity': ('无法确认匹配的后台身份。请检查状态或先用旧版窗口停止旧后台，勿按 PID 停止进程。', 'No matching authenticated backend identity. Check status or stop the old backend using its old-version window; never stop by PID alone.'),
+    'confirm': ('确认管理操作？', 'Confirm administrative operation?'),
+    'confirm_yes': ('[1] 确认', '[1] Confirm'),
+    'confirm_no': ('[0] 取消（默认）', '[0] Cancel (default)'),
+    'choice_prompt': ('请输入选项：', 'Select an option: '),
+    'force': ('仅强制停止 Bridge？\n  - 远端任务可能继续\n  - 任务账本保留',
+              'Force stop Bridge only?\n  - Remote tasks may continue\n  - The journal is retained'),
+    'restart': ('独立重启控制进程已启动\n  - 可以关闭管理窗口\n  - 不代表重启已经完成',
+                'Independent restart controller started\n  - The monitor may be closed\n  - Restart is not yet confirmed complete'),
+    'local_failure': ('后台本地启动失败\n  - 检查端口冲突和音频工具\n  - 可从主菜单的服务设置修复配置',
+                      'Backend local startup failed\n  - Check port conflicts and audio tools\n  - Repair settings from the main menu'),
+    'locked': ('本数据目录有其他操作正在进行\n  - 请检查状态或旧版窗口\n  - 不要删除运行文件',
+               'Another operation owns this data directory\n  - Check status or the old-version window\n  - Do not delete runtime files'),
+    'identity': ('无法确认匹配的后台身份\n  - 请检查状态，或先用旧版窗口停止旧后台\n  - 勿按 PID 停止进程',
+                 'No matching authenticated backend identity\n  - Check status or stop the old backend using its old-version window\n  - Never stop by PID alone'),
 }
 
 
@@ -371,9 +380,10 @@ def main(argv: list[str] | None = None) -> int:
             return _run_command(args, leases.data)
     except InstallPlatformError as error:
         # Do not inspect business config/control state to guess whether Setup is safe.
-        print('安装或数据目录当前不可用，请完成安装恢复或手动关闭相关程序后重试。 / '
-              'Installation/data unavailable; finish Setup recovery or manually close related programs and retry. '
-              + error.code, file=sys.stderr)
+        output = plain_output(sys.stderr)
+        output('安装或数据目录当前不可用，请完成安装恢复或手动关闭相关程序后重试。')
+        output('Installation/data unavailable; finish Setup recovery or manually close related programs and retry.')
+        output('错误代码 / Error code: ' + error.code)
         return 1
 
 
@@ -397,15 +407,19 @@ def _run_command(args, data_dir: Path) -> int:
         reader = ConsoleInput()
         human_ui = args.command in ('configure', 'monitor')
         ui = resolve_ui(data_dir, interactive=human_ui and is_interactive(), ask=reader.ask,
-                        output=print if human_ui else lambda _: None)
+                        output=plain_output() if human_ui else lambda _: None)
         if args.command == 'configure':
             from .wizard import run_wizard
             return run_wizard(data_dir, ui=ui, first_run=not (data_dir / 'config.json').exists(),
                               ask=reader.ask, secret=reader.secret)
         if args.command in ('stop', 'resolve', 'startup'):
             key = 'force' if args.command == 'stop' and args.force else 'confirm'
-            if not args.yes and reader.ask(ui.t(MESSAGES, key)).strip().lower() not in ('1', 'y', 'yes'):
-                return 1
+            if not args.yes:
+                output = plain_output()
+                for line in confirm_lines(ui.t(MESSAGES, key), ui.t(MESSAGES, 'confirm_yes'), ui.t(MESSAGES, 'confirm_no')):
+                    output(line)
+                if reader.ask(ui.t(MESSAGES, 'choice_prompt')).strip().lower() not in ('1', 'y', 'yes'):
+                    return 1
             if args.command == 'stop':
                 request_stop(data_dir, force=args.force)
             elif args.command == 'resolve':
@@ -416,7 +430,7 @@ def _run_command(args, data_dir: Path) -> int:
             return 0
         if args.command == 'restart':
             request_restart(data_dir)
-            print(ui.t(MESSAGES, 'restart'))
+            plain_output()('\n' + ui.t(MESSAGES, 'restart'))
             return 0
         if args.command == 'monitor':
             from .monitor import monitor
@@ -434,13 +448,16 @@ def _run_command(args, data_dir: Path) -> int:
         from .i18n import UIContext
         from .wizard import diagnostic
         ui = ui or UIContext()
-        print(diagnostic(error, ui), file=sys.stderr)
+        output = plain_output(sys.stderr)
+        output('')
         if isinstance(error, LocalStartFailure):
-            print(ui.t(MESSAGES, 'local_failure'), file=sys.stderr)
+            output(ui.t(MESSAGES, 'local_failure'))
         elif isinstance(error, AlreadyRunning):
-            print(ui.t(MESSAGES, 'locked'), file=sys.stderr)
+            output(ui.t(MESSAGES, 'locked'))
         elif isinstance(error, ControlError):
-            print(ui.t(MESSAGES, 'identity'), file=sys.stderr)
+            output(ui.t(MESSAGES, 'identity'))
+        else:
+            output(diagnostic(error, ui))
         return 1
     except (KeyboardInterrupt, EOFError):
         return 0

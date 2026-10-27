@@ -156,19 +156,19 @@ def recover_and_check(case, *, outcome):
     assert backup.exists()  # recovery is idempotent and never clears transaction backups
 
 
-@pytest.mark.parametrize('same_content', [False, True], ids=['update', 'same-content-repair'])
-@pytest.mark.parametrize('point,path,outcome', [
-    ('before_withdraw', '_internal/runtime.txt', 'rolled_back'),
-    ('after_withdraw', '_internal/runtime.txt', 'rolled_back'),
-    ('before_publish', '_internal/runtime.txt', 'rolled_back'),
-    ('after_publish', '_internal/runtime.txt', 'rolled_back'),
-    ('before_publish', 'ComfyBridge.exe', 'rolled_back'),
-    ('after_publish', 'ComfyBridge.exe', 'rolled_back'),
-    ('before_receipt', '', 'rolled_back'),
-    ('after_receipt', '', 'rolled_back'),
-    ('committed', '', 'committed'),
-])
-def test_abrupt_process_exit_recovers_atomic_installation(tmp_path, monkeypatch, same_content, point, path, outcome):
+# The full checkpoint matrix (every point, regular and abrupt faults) lives in
+# test_installer_core.py. This file keeps only representative points whose value
+# comes from a real os._exit: no finally blocks, OS-reclaimed leases/handles and a
+# fresh interpreter. Do not re-expand the matrix here.
+@pytest.mark.parametrize('point,path,same_content,outcome', [
+    ('after_withdraw', '_internal/runtime.txt', False, 'rolled_back'),
+    ('after_publish', 'ComfyBridge.exe', False, 'rolled_back'),
+    ('after_publish', 'ComfyBridge.exe', True, 'rolled_back'),
+    ('after_receipt', '', False, 'rolled_back'),
+    ('committed', '', False, 'committed'),
+], ids=['mid-apply-withdrawn-update', 'all-published-update', 'all-published-repair',
+        'receipt-written-update', 'committed-update'])
+def test_abrupt_process_exit_recovers_atomic_installation(tmp_path, monkeypatch, point, path, same_content, outcome):
     case = seed_installation(tmp_path, monkeypatch, same_content=same_content)
     result = child(case, 'execute', point=point, path=path)
     assert result.returncode == CRASH_EXIT, result.stderr.decode('utf-8', errors='replace')
@@ -180,8 +180,9 @@ def test_abrupt_process_exit_recovers_atomic_installation(tmp_path, monkeypatch,
     recover_and_check(case, outcome=outcome)
 
 
-@pytest.mark.parametrize('same_content', [False, True], ids=['update', 'same-content-repair'])
-@pytest.mark.parametrize('occurrence', [1, 2], ids=['before-old-restore', 'after-old-restore'])
+# Pairwise: each mode and each crash occurrence is exercised once.
+@pytest.mark.parametrize('same_content,occurrence', [(False, 1), (True, 2)],
+                         ids=['update-before-old-restore', 'repair-after-old-restore'])
 def test_abrupt_exit_during_rollback_can_resume_even_with_identical_content(tmp_path, monkeypatch, same_content, occurrence):
     case = seed_installation(tmp_path, monkeypatch, same_content=same_content)
     failed_update = child(case, 'execute', point='after_receipt')
