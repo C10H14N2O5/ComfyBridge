@@ -180,15 +180,53 @@ class LoadedPreset:
         result = self.build_prompt(text)
         binding = self.preset.cache_binding
         result[binding.node_id]["inputs"][binding.field] = False
-        result[self.preset.text_binding.node_id]["inputs"]["seed"] = seed
+        result[_cleanup_synthesis_node(self.preset, self.graph)]["inputs"]["seed"] = seed
         return result
 
 
-def _validate_cleanup_binding(preset: PresetConfig, graph: dict) -> None:
-    binding = preset.text_binding
-    node = graph[binding.node_id]
-    if node["class_type"] != "IndexTTS25BaseNode" or binding.field != "text":
+# Synthesis classes whose text/seed/cache_control inputs share the IndexTTS 2.5 base
+# semantics, so a short cleanup generation only changes text, seed and cache flag.
+_CLEANUP_SYNTHESIS_CLASSES = frozenset({
+    "IndexTTS25BaseNode", "IndexTTS25EmotionTextNode", "IndexTTS25EmotionAudioNode",
+    "IndexTTS25EmotionVectorNode",
+})
+# Literal string sources whose single STRING output passes the value through verbatim.
+_CLEANUP_TEXT_PRIMITIVES = frozenset({"PrimitiveString", "PrimitiveStringMultiline"})
+
+
+def _cache_synthesis_nodes(preset: PresetConfig, graph: dict) -> list[str]:
+    """Synthesis nodes on the selected audio path fed by the cache binding and the text."""
+    cache, binding = preset.cache_binding, preset.text_binding
+    audio_path = _ancestors(graph, graph[preset.audio_output_node]["inputs"]["audio"][0])
+    return sorted(node_id for node_id in audio_path
+                  if graph[node_id]["inputs"].get("cache_control") == [cache.node_id, 0]
+                  and binding.node_id in _ancestors(graph, node_id))
+
+
+def _cleanup_synthesis_node(preset: PresetConfig, graph: dict) -> str:
+    """The single supported synthesis node that receives the cleanup text and seed.
+
+    The text binding must be its `text` input, or the `value` of a string primitive
+    linked directly into that input, so the cleanup text is spoken verbatim.
+    """
+    if preset.cache_binding is None:
         raise WorkflowError("cache_cleanup_unsupported")
+    candidates = _cache_synthesis_nodes(preset, graph)
+    if len(candidates) != 1 or graph[candidates[0]]["class_type"] not in _CLEANUP_SYNTHESIS_CLASSES:
+        raise WorkflowError("cache_cleanup_unsupported")
+    node_id, binding = candidates[0], preset.text_binding
+    if binding.node_id == node_id:
+        if binding.field != "text":
+            raise WorkflowError("cache_cleanup_unsupported")
+    elif (graph[node_id]["inputs"].get("text") != [binding.node_id, 0]
+            or graph[binding.node_id]["class_type"] not in _CLEANUP_TEXT_PRIMITIVES
+            or binding.field != "value"):
+        raise WorkflowError("cache_cleanup_unsupported")
+    return node_id
+
+
+def _validate_cleanup_binding(preset: PresetConfig, graph: dict) -> None:
+    node = graph[_cleanup_synthesis_node(preset, graph)]
     if "seed" in node["inputs"]:
         seed = node["inputs"]["seed"]
         if type(seed) is not int or not 0 <= seed <= MAX_CLEANUP_SEED:
@@ -227,10 +265,7 @@ def _validate_bindings(preset: PresetConfig, graph: dict, policy: str,
         # synthesis node on the selected audio path that also receives the request
         # text. The text binding may be that synthesis node itself or any upstream
         # node (e.g. a multiline string primitive linked into its text input).
-        audio_path = _ancestors(graph, output["inputs"]["audio"][0])
-        if not any(graph[node_id]["inputs"].get("cache_control") == [cache.node_id, 0]
-                   and binding.node_id in _ancestors(graph, node_id)
-                   for node_id in audio_path):
+        if not _cache_synthesis_nodes(preset, graph):
             raise WorkflowError("workflow_cache_binding")
     if policy == "idle_release" and idle_release.method == "workflow":
         _validate_cleanup_binding(preset, graph)
@@ -361,7 +396,10 @@ def _schema_errors(graph: dict, schemas: dict) -> list[str]:
 
 def _cleanup_seed_schema_errors(loaded: LoadedPreset, schemas: dict) -> set[str]:
     """Prove a literal INT seed can span the complete durable cleanup sequence."""
-    node = loaded.graph[loaded.preset.text_binding.node_id]
+    try:
+        node = loaded.graph[_cleanup_synthesis_node(loaded.preset, loaded.graph)]
+    except (WorkflowError, KeyError, TypeError, IndexError):
+        return {"cache_cleanup_unsupported"}
     schema = schemas.get(node["class_type"])
     inputs = schema.get("input") if isinstance(schema, dict) else None
     if not isinstance(inputs, dict):

@@ -113,7 +113,7 @@ MESSAGES = {
     'idle_release_settings_not_applicable': ('非定时丢弃策略不能保留定时清理设置。', 'Other cache policies cannot retain idle-release settings.'),
     'invalid_idle_release_text': ('清理文本必须为 1–64 字符且不能全为空白；请勿包含控制字符。', 'Cleanup text must contain 1–64 characters and must not be blank or contain control characters.'),
     'workflow_idle_release_settings': ('工作流的定时丢弃设置与缓存策略不一致。', 'Workflow idle-release settings do not match the cache policy.'),
-    'cache_cleanup_unsupported': ('工作流清理需要 IndexTTS25BaseNode 的 text 输入；请更换模板或使用 /free。', 'Workflow cleanup requires the IndexTTS25BaseNode text input; change the template or use /free.'),
+    'cache_cleanup_unsupported': ('工作流清理需要唯一一个接入缓存控制的 IndexTTS 2.5 Base／Emotion 合成节点，文本绑定为其 text 输入或直接连入该输入的字符串节点 value；请更换模板或使用 /free。', 'Workflow cleanup requires exactly one cache-controlled IndexTTS 2.5 Base/Emotion synthesis node, with text bound to its text input or to the value of a string node linked directly into it; change the template or use /free.'),
     'cache_cleanup_seed_binding': ('清理模板的 seed 必须为 32 位非负整数或省略，不能连接其他节点。', 'Cleanup template seed must be a literal unsigned 32-bit integer or omitted, not a node link.'),
     'cache_cleanup_seed_invalid': ('清理任务种子无效或已耗尽；不会提交任务。', 'Cleanup task seed is invalid or exhausted; no task will be submitted.'),
     'cache_cleanup_text': ('清理任务短文本无效，请检查长度和空白字符。', 'Cleanup task text is invalid; check its length and whitespace.'),

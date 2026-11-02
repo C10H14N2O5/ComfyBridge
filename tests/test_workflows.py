@@ -461,10 +461,78 @@ def test_cache_synthesis_must_receive_bound_text(tmp_path, graph):
         load(tmp_path, graph, policy="keep", text_binding=UPSTREAM_TEXT)
 
 
-def test_upstream_string_text_binding_does_not_enable_workflow_cleanup(tmp_path, graph):
+CLEANUP_SYNTHESIS_CLASSES = ["IndexTTS25BaseNode", "IndexTTS25EmotionTextNode",
+                             "IndexTTS25EmotionAudioNode", "IndexTTS25EmotionVectorNode"]
+IDLE_WORKFLOW = {"policy": "idle_release", "idle_release": {"method": "workflow"}}
+
+
+@pytest.mark.parametrize("synthesis_class", CLEANUP_SYNTHESIS_CLASSES)
+@pytest.mark.parametrize("text_source", ["direct", "PrimitiveStringMultiline", "PrimitiveString"])
+def test_idle_workflow_cleanup_supports_emotion_nodes_and_string_primitives(
+        tmp_path, graph, schemas, synthesis_class, text_source):
+    graph["2"]["class_type"] = synthesis_class
+    schemas[synthesis_class] = deepcopy(schemas["IndexTTS25BaseNode"])
+    binding = {"node_id": "2", "field": "text"}
+    if text_source != "direct":
+        upstream_text_graph(graph)
+        graph["9"]["class_type"] = text_source
+        schemas[text_source] = {"input": {"required": {"value": ["STRING", {}]}},
+                                "output": ["STRING"], "output_node": False}
+        binding = UPSTREAM_TEXT
+    loaded = load(tmp_path, graph, **IDLE_WORKFLOW, text_binding=binding)
+    original = deepcopy(loaded.graph)
+    normal = loaded.build_prompt("业务文本")
+    cleanup = loaded.build_cleanup_prompt("好。", 7)
+    expected = deepcopy(original)
+    expected[binding["node_id"]]["inputs"][binding["field"]] = "好。"
+    expected["2"]["inputs"]["seed"] = 7
+    expected["3"]["inputs"]["keep_models_cached"] = False
+    assert cleanup == expected
+    assert normal["2"]["inputs"]["seed"] == original["2"]["inputs"]["seed"]
+    assert normal["3"]["inputs"]["keep_models_cached"] is True
+    assert loaded.graph == original == graph
+    assert validate_live(loaded, schemas) == []
+
+
+def test_idle_workflow_cleanup_supports_attached_emotion_text_shape(tmp_path, graph):
+    # Mirrors an exported Emotion Text API workflow with extra optional inputs.
     upstream_text_graph(graph)
+    graph["2"]["class_type"] = "IndexTTS25EmotionTextNode"
+    graph["2"]["inputs"].update(emotion_description="", emotion_weight=0.6, seed=3292620009)
+    loaded = load(tmp_path, graph, **IDLE_WORKFLOW, text_binding=UPSTREAM_TEXT)
+    cleanup = loaded.build_cleanup_prompt("好。", 1)
+    assert cleanup["9"]["inputs"]["value"] == "好。"
+    assert cleanup["2"]["inputs"]["text"] == ["9", 0]
+    assert cleanup["2"]["inputs"]["seed"] == 1
+    assert cleanup["2"]["inputs"]["emotion_description"] == ""
+
+
+@pytest.mark.parametrize("mutation", ["non_primitive_source", "indirect_source", "other_text_input",
+                                       "two_cached_synthesis_nodes"])
+def test_idle_workflow_cleanup_rejects_ambiguous_text_routing(tmp_path, graph, mutation):
+    upstream_text_graph(graph)
+    if mutation == "non_primitive_source":
+        graph["9"]["class_type"] = "StringConcatenate"
+    elif mutation == "indirect_source":
+        graph["proxy"] = {"class_type": "StringProxy", "inputs": {"string": ["9", 0]}}
+        graph["2"]["inputs"]["text"] = ["proxy", 0]
+    elif mutation == "other_text_input":
+        graph["2"]["class_type"] = "IndexTTS25EmotionTextNode"
+        graph["2"]["inputs"].update(text="literal template text", emotion_description=["9", 0])
+    else:
+        graph["2b"] = deepcopy(graph["2"])
+        graph["concat"] = {"class_type": "AudioConcat", "inputs": {"a": ["2", 0], "b": ["2b", 0]}}
+        graph["4"]["inputs"]["audio"] = ["concat", 0]
     with pytest.raises(WorkflowError, match="cache_cleanup_unsupported"):
-        load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"}, text_binding=UPSTREAM_TEXT)
+        load(tmp_path, graph, **IDLE_WORKFLOW, text_binding=UPSTREAM_TEXT)
+
+
+def test_idle_workflow_seed_is_validated_on_synthesis_not_text_source(tmp_path, graph):
+    upstream_text_graph(graph)
+    graph["seed_source"] = {"class_type": "PrimitiveInt", "inputs": {"value": 5}}
+    graph["2"]["inputs"]["seed"] = ["seed_source", 0]
+    with pytest.raises(WorkflowError, match="cache_cleanup_seed_binding"):
+        load(tmp_path, graph, **IDLE_WORKFLOW, text_binding=UPSTREAM_TEXT)
 
 
 @pytest.mark.parametrize("mutation", ["missing_node", "self_cycle", "long_cycle", "disconnected_cycle", "malformed_link",
