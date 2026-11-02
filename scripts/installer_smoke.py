@@ -179,7 +179,7 @@ def main() -> int:
                               capture_output=True, env=env, cwd=elsewhere, timeout=30)
     assert selftest.returncode == 0
     diagnostic = json.loads(selftest.stdout)
-    assert diagnostic['ok'] is True and diagnostic['version'] == '0.4.1'
+    assert diagnostic['ok'] is True and diagnostic['version'] == '0.4.2'
     report['selftest'] = diagnostic
     # Verify the real onefile Setup follows its English selection as well.
     english = case / 'English 全新安装'

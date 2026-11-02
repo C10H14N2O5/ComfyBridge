@@ -2,15 +2,20 @@
 
 记录 ComfyBridge 各版本的主要变化。版本按新到旧排列，日期使用北京时间（UTC+8）。
 
-## 未发布
+## v0.4.2 — 2026-11-03
+
+### 改进
+
+- “定时丢弃 → 工作流（短生成卸载）”支持情感合成节点 `IndexTTS25EmotionTextNode`、`IndexTTS25EmotionAudioNode`、`IndexTTS25EmotionVectorNode`，并允许文本绑定在直接连入合成节点 `text` 的“字符串”/“字符串（多行）”节点 `value` 上。清理任务的 seed 改为写入并校验在接入缓存控制的合成节点上；接入缓存控制的合成节点不唯一、文本经其他节点转接或接入非 `text` 输入时仍明确拒绝。
 
 ### 修复
 
 - 文本注入字段绑定到合成节点上游的字符串节点（例如“字符串（多行）”的 `value`）时，绑定缓存控制不再误报 `workflow_cache_binding`。现在的校验要求缓存控制节点经 slot 0 接入最终音频路径上某个合成节点的 `cache_control`，且请求文本流入该合成节点；原有的类别、字段、布尔值和接线检查保持不变。
 
-### 改进
+### 保持不变
 
-- “定时丢弃 → 工作流（短生成卸载）”支持情感合成节点 `IndexTTS25EmotionTextNode`、`IndexTTS25EmotionAudioNode`、`IndexTTS25EmotionVectorNode`，并允许文本绑定在直接连入合成节点 `text` 的“字符串”/“字符串（多行）”节点 `value` 上。清理任务的 seed 改为写入并校验在接入缓存控制的合成节点上；接入缓存控制的合成节点不唯一、文本经其他节点转接或接入非 `text` 输入时仍明确拒绝。
+- HTTP TTS API、配置结构、状态 JSON、日志格式和任务恢复语义不变；已登记的预设无需修改，原有绑定继续有效。
+- 原始 WebUI 工作流导入仍只支持 Example 风格四节点平铺结构；其他工作流请导出 API 格式 JSON。
 
 ## v0.4.1 — 2026-10-27
 

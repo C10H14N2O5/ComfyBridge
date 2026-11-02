@@ -1,4 +1,4 @@
-# Implementation contract — ComfyBridge 0.4.1
+# Implementation contract — ComfyBridge 0.4.2
 
 This document records the original 2026-10-23 contracts and approved 2026-10-24 and 2026-10-27 extensions. It is not a completion report. The [requirements record](<todo.md>) retains historical decisions. No code may modify ComfyUI installation/canvas, clear global queues/history, or interrupt running GPU jobs. The explicit v0.3.0 `/free` policy is an authorized instance-wide model/memory release, not a targeted per-model operation.
 
