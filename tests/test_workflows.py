@@ -406,6 +406,67 @@ def test_cache_binding_must_feed_synthesis(tmp_path, graph, mutation):
         load(tmp_path, graph, cache_binding=binding)
 
 
+def upstream_text_graph(graph):
+    """Text supplied by an upstream multiline string primitive linked into synthesis."""
+    graph["9"] = {"class_type": "PrimitiveStringMultiline", "inputs": {"value": "原始文本"}}
+    graph["2"]["inputs"]["text"] = ["9", 0]
+    return graph
+
+
+UPSTREAM_TEXT = {"node_id": "9", "field": "value"}
+
+
+@pytest.mark.parametrize("policy,idle_release,expected", [
+    ("keep", None, True), ("release", None, False), ("idle_release", {"method": "free"}, True),
+])
+def test_upstream_string_text_binding_accepts_cache_binding(tmp_path, graph, schemas, policy, idle_release, expected):
+    upstream_text_graph(graph)
+    loaded = load(tmp_path, graph, policy=policy, idle_release=idle_release, text_binding=UPSTREAM_TEXT)
+    prompt = loaded.build_prompt("新的请求文本")
+    assert prompt["9"]["inputs"]["value"] == "新的请求文本"
+    assert prompt["2"]["inputs"]["text"] == ["9", 0]
+    assert prompt["3"]["inputs"]["keep_models_cached"] is expected
+    assert loaded.graph == graph
+    schemas["PrimitiveStringMultiline"] = {
+        "input": {"required": {"value": ["STRING", {"multiline": True}]}}, "output": ["STRING"], "output_node": False,
+    }
+    assert validate_live(loaded, schemas) == []
+
+
+def test_upstream_string_text_binding_cache_must_feed_synthesis(tmp_path, graph):
+    upstream_text_graph(graph)
+    del graph["2"]["inputs"]["cache_control"]
+    with pytest.raises(WorkflowError, match="workflow_cache_binding"):
+        load(tmp_path, graph, policy="keep", text_binding=UPSTREAM_TEXT)
+
+
+def test_cache_feeding_only_unselected_branch_is_rejected(tmp_path, graph):
+    upstream_text_graph(graph)
+    del graph["2"]["inputs"]["cache_control"]
+    # The cache and the text feed another synthesis branch that never reaches node 4.
+    graph["other"] = {"class_type": "IndexTTS25BaseNode",
+                      "inputs": {"text": ["9", 0], "reference_audio": ["1", 0], "cache_control": ["3", 0]}}
+    graph["other_output"] = {"class_type": "SaveAudio", "inputs": {"audio": ["other", 0]}}
+    with pytest.raises(WorkflowError, match="workflow_cache_binding"):
+        load(tmp_path, graph, policy="keep", text_binding=UPSTREAM_TEXT)
+
+
+def test_cache_synthesis_must_receive_bound_text(tmp_path, graph):
+    # The selected synthesis gets its cache control, but the bound text only reaches
+    # an unrelated branch that does not feed the selected output.
+    graph["9"] = {"class_type": "PrimitiveStringMultiline", "inputs": {"value": "x"}}
+    graph["other"] = {"class_type": "IndexTTS25BaseNode", "inputs": {"text": ["9", 0], "reference_audio": ["1", 0]}}
+    graph["other_output"] = {"class_type": "SaveAudio", "inputs": {"audio": ["other", 0]}}
+    with pytest.raises(WorkflowError):
+        load(tmp_path, graph, policy="keep", text_binding=UPSTREAM_TEXT)
+
+
+def test_upstream_string_text_binding_does_not_enable_workflow_cleanup(tmp_path, graph):
+    upstream_text_graph(graph)
+    with pytest.raises(WorkflowError, match="cache_cleanup_unsupported"):
+        load(tmp_path, graph, policy="idle_release", idle_release={"method": "workflow"}, text_binding=UPSTREAM_TEXT)
+
+
 @pytest.mark.parametrize("mutation", ["missing_node", "self_cycle", "long_cycle", "disconnected_cycle", "malformed_link",
                                        "negative_slot", "boolean_slot", "integer_origin", "unknown_field", "not_json"])
 def test_invalid_graph_import_rejected(tmp_path, graph, mutation):

@@ -219,13 +219,18 @@ def _validate_bindings(preset: PresetConfig, graph: dict, policy: str,
     if needs_cache and cache is None:
         raise WorkflowError("workflow_cache_binding")
     if cache is not None:
-        if (cache.node_id not in _ancestors(graph, binding.node_id)
-                or cache.field != "keep_models_cached"
+        if (cache.field != "keep_models_cached" or cache.node_id not in graph
                 or graph[cache.node_id]["class_type"] != "IndexTTS25CacheControlNode"
                 or type(graph[cache.node_id]["inputs"].get(cache.field)) is not bool):
             raise WorkflowError("workflow_cache_binding")
-        # This cache node must actually feed a synthesis cache_control input, slot zero.
-        if graph[binding.node_id]["inputs"].get("cache_control") != [cache.node_id, 0]:
+        # This cache node must actually feed (slot zero) the cache_control input of a
+        # synthesis node on the selected audio path that also receives the request
+        # text. The text binding may be that synthesis node itself or any upstream
+        # node (e.g. a multiline string primitive linked into its text input).
+        audio_path = _ancestors(graph, output["inputs"]["audio"][0])
+        if not any(graph[node_id]["inputs"].get("cache_control") == [cache.node_id, 0]
+                   and binding.node_id in _ancestors(graph, node_id)
+                   for node_id in audio_path):
             raise WorkflowError("workflow_cache_binding")
     if policy == "idle_release" and idle_release.method == "workflow":
         _validate_cleanup_binding(preset, graph)
