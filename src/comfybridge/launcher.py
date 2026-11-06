@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import ExitStack
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -88,6 +90,151 @@ def restore_snapshot_templates(data_dir: Path, snapshot: str) -> None:
                 os.replace(temporary, destination)
             finally:
                 temporary.unlink(missing_ok=True)
+
+
+STALE_TEMP_SECONDS = 600
+
+
+@dataclass(frozen=True)
+class RuntimeCleanup:
+    """Runtime items eligible for deletion; nothing here is ever a live state file."""
+    snapshots: tuple[str, ...] = ()
+    temporary: tuple[str, ...] = ()
+    size: int = 0
+
+    @property
+    def count(self) -> int:
+        return len(self.snapshots) + len(self.temporary)
+
+
+def _canonical_uuid(value) -> bool:
+    try:
+        return type(value) is str and str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or (hasattr(path, 'is_junction') and path.is_junction())
+
+
+def _snapshot_references(path: Path, keys: tuple[str, ...]) -> set[str]:
+    try:
+        if _is_link(path) or path.stat().st_size > 16384:
+            return set()
+        raw = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(raw, dict):
+        return set()
+    return {raw[key] for key in keys if _canonical_uuid(raw.get(key))}
+
+
+def protected_snapshots(data_dir: Path, *, backend_running: bool) -> set[str]:
+    """Snapshots used by a running backend, last-good start or recorded restart.
+
+    A running backend whose snapshot cannot be identified makes every snapshot
+    potentially live: refuse rather than guess.
+    """
+    runtime = Path(data_dir) / 'runtime'
+    running = _snapshot_references(runtime / 'control.json', ('snapshot',))
+    if backend_running and not running:
+        raise ValueError('runtime_backend_snapshot_unknown')
+    return (running | _snapshot_references(runtime / 'last-good.json', ('snapshot',))
+            | _snapshot_references(runtime / 'restart.json', ('snapshot', 'fallback')))
+
+
+def _tree_size(path: Path) -> int:
+    total = 0
+    for directory, _, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(directory, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def runtime_cleanup_plan(data_dir: Path, *, backend_running: bool, now: float | None = None) -> RuntimeCleanup:
+    """List unreferenced snapshot directories and stale private temporary files.
+
+    Only canonical-UUID snapshot directories and ``.private-*`` files older than
+    STALE_TEMP_SECONDS directly in ``runtime`` are eligible; links are never listed.
+    """
+    runtime = Path(data_dir) / 'runtime'
+    if _is_link(runtime) or not runtime.is_dir():
+        return RuntimeCleanup()
+    protected = protected_snapshots(data_dir, backend_running=backend_running)
+    now = time.time() if now is None else now
+    snapshots, temporary, size = [], [], 0
+    root = runtime / 'snapshots'
+    if not _is_link(root) and root.is_dir():
+        for entry in sorted(root.iterdir()):
+            if (_canonical_uuid(entry.name) and entry.name not in protected
+                    and not _is_link(entry) and entry.is_dir()):
+                snapshots.append(entry.name)
+                size += _tree_size(entry)
+    for entry in sorted(runtime.iterdir()):
+        if not entry.name.startswith('.private-') or _is_link(entry) or not entry.is_file():
+            continue
+        try:
+            stat = entry.stat()
+        except OSError:
+            continue
+        if now - stat.st_mtime >= STALE_TEMP_SECONDS:
+            temporary.append(entry.name)
+            size += stat.st_size
+    return RuntimeCleanup(tuple(snapshots), tuple(temporary), size)
+
+
+def backend_lock_held(data_dir: Path) -> bool:
+    """Whether a backend currently owns this data directory (a momentary probe)."""
+    try:
+        with InstanceLock(Path(data_dir), 'backend'):
+            return False
+    except AlreadyRunning:
+        return True
+
+
+def clean_runtime(data_dir: Path, plan: RuntimeCleanup) -> tuple[list[str], list[str]]:
+    """Delete the confirmed plan, rechecked under the start/config/backend locks.
+
+    Holding ``start`` excludes ensure_backend and the restart controller for the
+    whole operation; ``config`` excludes snapshot capture and the editor. Raises
+    AlreadyRunning when either is busy. Returns ``(removed, failed)`` labels.
+    """
+    data_dir = Path(data_dir)
+    with ExitStack() as stack:
+        stack.enter_context(InstanceLock(data_dir, 'start'))
+        stack.enter_context(InstanceLock(data_dir, 'config'))
+        try:
+            stack.enter_context(InstanceLock(data_dir, 'backend'))
+            backend_running = False
+        except AlreadyRunning:
+            backend_running = True
+        current = runtime_cleanup_plan(data_dir, backend_running=backend_running)
+        runtime = (data_dir / 'runtime').resolve()
+        removed, failed = [], []
+        for name in sorted(set(plan.snapshots) & set(current.snapshots)):
+            path = data_dir / 'runtime' / 'snapshots' / name
+            label = 'snapshots/' + name
+            try:
+                if _is_link(path) or path.resolve().parent != runtime / 'snapshots':
+                    continue
+                shutil.rmtree(path)  # does not follow links or junctions
+                removed.append(label)
+            except OSError:
+                failed.append(label)
+        for name in sorted(set(plan.temporary) & set(current.temporary)):
+            path = data_dir / 'runtime' / name
+            try:
+                if _is_link(path) or path.resolve().parent != runtime:
+                    continue
+                path.unlink(missing_ok=True)
+                removed.append(name)
+            except OSError:
+                failed.append(name)
+        return removed, failed
 
 
 def _controller_status(data_dir: Path) -> dict:

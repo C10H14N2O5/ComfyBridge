@@ -302,3 +302,112 @@ def test_home_header_and_shared_summary_layout(tmp_path, monkeypatch, language):
     expected = summary_lines(config.model_dump(mode='json'), instance.ui)
     assert lines[-len(expected):] == expected
     assert 'never-print-this' not in '\n'.join(lines)
+
+
+# --- Advanced cleanup entries ----------------------------------------------------
+
+def preset_files(tmp_path):
+    from comfybridge.wizard import put_model, put_preset
+    data = settings(tmp_path).model_dump(mode='json')
+    put_model(data, 'm')
+    graph = {'1': {'class_type': 'IndexTTS25BaseNode', 'inputs': {'text': 'one'}},
+             '2': {'class_type': 'SaveAudio', 'inputs': {'audio': ['1', 0]}}}
+    bindings = dict(text_binding={'node_id': '1', 'field': 'text'}, audio_output_node='2')
+    used = put_preset(tmp_path, data, graph, model='m', voice='used', **bindings)
+    graph['1']['inputs']['text'] = 'two'
+    unused = put_preset(tmp_path, data, graph, model='m', voice='unused', **bindings)
+    data['presets'] = [p for p in data['presets'] if p['voice'] == 'used']
+    save_config(tmp_path, AppConfig.model_validate(data))
+    (tmp_path / 'workflows' / 'manual.json').write_text('{}')
+    return tmp_path / used['template'], tmp_path / unused['template']
+
+
+def test_advanced_cleanup_deletes_only_unreferenced_after_confirm(tmp_path, monkeypatch):
+    used, unused = preset_files(tmp_path)
+    instance, output = home(tmp_path, monkeypatch, ['5', '1', '', '0'])
+    instance.advanced()
+    assert used.exists() and not unused.exists() and (tmp_path / 'workflows/manual.json').exists()
+    assert '  ' + unused.name in output and '  ' + used.name not in output
+    assert any('Deleted 1 unused workflow' in line for line in output)
+
+
+def test_advanced_cleanup_cancel_keeps_everything(tmp_path, monkeypatch):
+    used, unused = preset_files(tmp_path)
+    instance, _ = home(tmp_path, monkeypatch, [''])
+    instance.cleanup_workflows()
+    assert used.exists() and unused.exists()
+
+
+def test_cleanup_nothing_to_do(tmp_path, monkeypatch):
+    settings(tmp_path)
+    instance, output = home(tmp_path, monkeypatch)
+    instance.cleanup_workflows()
+    assert any('No workflow files are unreferenced' in line for line in output)
+
+
+@pytest.mark.parametrize('broken', [b'{"broken": true}', None])
+def test_cleanup_refuses_without_valid_config(tmp_path, monkeypatch, broken):
+    used, unused = preset_files(tmp_path)
+    if broken is None:
+        (tmp_path / 'config.json').unlink()
+    else:
+        (tmp_path / 'config.json').write_bytes(broken)
+    instance, output = home(tmp_path, monkeypatch, ['1'])
+    instance.cleanup_workflows()
+    assert used.exists() and unused.exists()
+    assert any('No files were deleted' in line for line in output)
+
+
+def test_cleanup_locked_by_editor_deletes_nothing(tmp_path, monkeypatch):
+    from comfybridge.platform_windows import AlreadyRunning
+    _, unused = preset_files(tmp_path)
+    class Busy:
+        def __init__(self, *_): pass
+        def __enter__(self): raise AlreadyRunning('config_locked')
+        def __exit__(self, *_): return False
+    monkeypatch.setattr(c, 'InstanceLock', Busy)
+    instance, output = home(tmp_path, monkeypatch, ['1'])
+    instance.cleanup_workflows()
+    assert unused.exists() and any('configuration editor' in line for line in output)
+
+
+def test_cleanup_rechecks_config_changed_during_confirmation(tmp_path, monkeypatch):
+    _, unused = preset_files(tmp_path)
+    instance, _ = home(tmp_path, monkeypatch)
+    def ask(_):
+        changed = load_config(tmp_path).model_dump(mode='json')
+        changed['presets'][0]['template'] = 'workflows/' + unused.name
+        changed['presets'][0]['sha256'] = __import__('hashlib').sha256(unused.read_bytes()).hexdigest()
+        save_config(tmp_path, AppConfig.model_validate(changed))
+        return '1'
+    instance.ask = ask
+    instance.cleanup_workflows()
+    assert unused.exists()
+
+
+def test_advanced_runtime_cleanup_after_confirm(tmp_path, monkeypatch):
+    settings(tmp_path)
+    keep, old = launcher.capture_snapshot(tmp_path), launcher.capture_snapshot(tmp_path)
+    (tmp_path / 'runtime' / 'last-good.json').write_text(json.dumps({'snapshot': keep}))
+    instance, output = home(tmp_path, monkeypatch, ['6', '1', '', '0'])
+    instance.advanced()
+    assert sorted(p.name for p in (tmp_path / 'runtime' / 'snapshots').iterdir()) == [keep]
+    assert '  snapshots/' + old in output and any('Deleted 1 runtime item' in line for line in output)
+
+
+def test_runtime_cleanup_cancel_and_unknown_running_backend(tmp_path, monkeypatch):
+    settings(tmp_path)
+    old = launcher.capture_snapshot(tmp_path)
+    instance, output = home(tmp_path, monkeypatch, [''])
+    instance.cleanup_runtime()
+    assert (tmp_path / 'runtime' / 'snapshots' / old).is_dir()
+    monkeypatch.setattr(launcher, 'backend_lock_held', lambda _: True)
+    instance.cleanup_runtime()
+    assert (tmp_path / 'runtime' / 'snapshots' / old).is_dir()
+    assert any('cannot be identified' in line for line in output)
+
+
+def test_runtime_cleanup_nothing_to_do(tmp_path, monkeypatch):
+    instance, output = home(tmp_path, monkeypatch)
+    instance.cleanup_runtime()
+    assert any('no runtime temporary files' in line for line in output)

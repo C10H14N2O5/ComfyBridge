@@ -1,6 +1,7 @@
 from copy import deepcopy
 import hashlib
 import json
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -848,3 +849,88 @@ def test_load_rejects_template_symlink_outside_workflows(tmp_path, graph):
     symlink_or_skip(template, sibling)
     with pytest.raises(WorkflowError, match="workflow_path_escape"):
         load_presets(config, tmp_path)
+
+
+# --- Unused template cleanup ---------------------------------------------------
+
+def orphan(tmp_path, graph, text="orphan"):
+    changed = deepcopy(graph)
+    changed["2"]["inputs"]["text"] = text
+    return import_template(tmp_path, changed, "m", "v", str(uuid4()))[0]
+
+
+def test_unused_templates_lists_only_unreferenced_import_names(tmp_path, graph):
+    from comfybridge.workflows import managed_templates, unused_templates
+    config = register(tmp_path, graph)
+    unused = orphan(tmp_path, graph)
+    workflows = tmp_path / "workflows"
+    (workflows / "example.json").write_text("{}")
+    (workflows / "notes.txt").write_text("x")
+    (workflows / ".comfybridge-abc.tmp").write_text("x")
+    (workflows / (unused.split("/")[1] + ".0123abcd.tmp")).write_text("x")
+    nested = workflows / "nested"
+    nested.mkdir()
+    (nested / Path(unused).name).write_text("{}")
+    (workflows / ("preset-" + str(uuid4()) + "-" + "A" * 64 + ".json")).write_text("{}")
+    assert managed_templates(tmp_path) == sorted([config.presets[0].template, unused])
+    assert unused_templates(tmp_path, config) == [unused]
+
+
+def test_unused_templates_without_workflows_directory(tmp_path, graph):
+    from comfybridge.workflows import remove_unused_templates, unused_templates
+    config = register(tmp_path / "other", graph)
+    assert unused_templates(tmp_path, config) == []
+    assert remove_unused_templates(tmp_path, ["workflows/x.json"], config) == ([], [])
+
+
+def test_remove_never_deletes_referenced_or_ineligible_candidates(tmp_path, graph):
+    from comfybridge.workflows import remove_unused_templates
+    config = register(tmp_path, graph)
+    referenced = config.presets[0].template
+    unused = orphan(tmp_path, graph)
+    (tmp_path / "workflows" / "example.json").write_text("{}")
+    (tmp_path / "config.json").write_text("{}")
+    missing = "workflows/preset-" + str(uuid4()) + "-" + "0" * 64 + ".json"
+    candidates = [referenced, unused, missing, "workflows/example.json", "config.json",
+                  "workflows/../config.json", "workflows/nested/" + Path(unused).name,
+                  "workflows\\" + Path(unused).name, None]
+    assert remove_unused_templates(tmp_path, candidates, config) == ([unused], [])
+    assert (tmp_path / referenced).exists() and not (tmp_path / unused).exists()
+    assert (tmp_path / "workflows/example.json").exists() and (tmp_path / "config.json").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="case-insensitive file system")
+def test_case_variant_reference_still_protects_template(tmp_path, graph):
+    from comfybridge.workflows import remove_unused_templates, unused_templates
+    config = register(tmp_path, graph)
+    template = config.presets[0].template
+    config.presets[0].template = "workflows/" + Path(template).name.upper().replace(".JSON", ".json")
+    assert unused_templates(tmp_path, config) == []
+    assert remove_unused_templates(tmp_path, [template], config) == ([], [])
+    assert (tmp_path / template).exists()
+
+
+def test_remove_reports_failure_without_raising(tmp_path, graph, monkeypatch):
+    from comfybridge.workflows import remove_unused_templates
+    config = register(tmp_path, graph)
+    first, second = sorted([orphan(tmp_path, graph, "one"), orphan(tmp_path, graph, "two")])
+    original = Path.unlink
+    def unlink(self, *args, **kwargs):
+        if self.name == Path(first).name:
+            raise PermissionError("locked")
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    assert remove_unused_templates(tmp_path, [first, second], config) == ([second], [first])
+    assert (tmp_path / first).exists()
+
+
+def test_unused_templates_skip_links(tmp_path, graph):
+    from comfybridge.workflows import remove_unused_templates, unused_templates
+    config = register(tmp_path, graph)
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}")
+    link = tmp_path / "workflows" / ("preset-" + str(uuid4()) + "-" + "1" * 64 + ".json")
+    symlink_or_skip(link, outside)
+    assert unused_templates(tmp_path, config) == []
+    assert remove_unused_templates(tmp_path, ["workflows/" + link.name], config) == ([], [])
+    assert outside.exists()

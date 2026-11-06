@@ -131,8 +131,17 @@ MESSAGES = {
     'select_cache': ('明确选择缓存控制绑定', 'Explicitly select cache binding'),
     'no_cache': ('不绑定缓存控制（仅限跟随工作流或定时 /free）', 'No cache binding (inherit or timed /free only)'),
     'apply_preset': ('将此预设变更应用到草稿？', 'Apply this preset change to the draft?'),
-    'confirm_delete_model': ('删除此模型及其全部预设？', 'Delete this model and ALL its presets?'),
-    'confirm_delete_preset': ('删除此预设登记（保留不可变 JSON 文件）？', 'Delete this registration (keep immutable JSON files)?'),
+    'confirm_delete_model': ('删除此模型及其全部预设？\n'
+                             '  - 保存后会自动删除不再使用的工作流 JSON 文件',
+                             'Delete this model and ALL its presets?\n'
+                             '  - Unused workflow JSON files are deleted automatically after saving'),
+    'confirm_delete_preset': ('删除此预设？\n'
+                              '  - 保存后会自动删除其不再使用的工作流 JSON 文件',
+                              'Delete this preset?\n'
+                              '  - Its unused workflow JSON file is deleted automatically after saving'),
+    'templates_removed': ('已删除 {count} 个不再使用的工作流模板文件。', 'Deleted {count} unused workflow template file(s).'),
+    'templates_cleanup_failed': ('配置已保存，但有工作流模板文件未能删除；可稍后在高级设置中清理闲置工作流。',
+                                 'Configuration saved, but some workflow template files could not be deleted; clean up unused workflows later from Advanced settings.'),
     'invalid_existing': ('现有配置无效，将从空草稿开始修复：\n'
                          '  - 明确保存前不会修改原文件\n'
                          '  - 保存时会先备份原文件',
@@ -432,7 +441,7 @@ def binding_choices(graph: dict, *, cache: bool = False) -> list[tuple[dict, str
 
 def put_preset(data_dir: Path, draft: dict, graph: dict, *, model: str, voice: str,
                text_binding: dict, audio_output_node: str, cache_binding: dict | None = None,
-               replace_id: str | None = None) -> dict:
+               replace_id: str | None = None, imported: set[str] | None = None) -> dict:
     from .config import PresetConfig
     from .workflows import import_template
     if model not in {m['id'] for m in draft.get('models', [])}:
@@ -443,6 +452,9 @@ def put_preset(data_dir: Path, draft: dict, graph: dict, *, model: str, voice: s
         raise ValueError('unknown_preset')
     preset_id = replace_id or str(uuid.uuid4())
     template, digest = import_template(data_dir, graph, model, voice, preset_id)
+    if imported is not None:
+        # Track before validation: a rejected binding still leaves a written file.
+        imported.add(template)
     preset = PresetConfig(id=preset_id, model=model, voice=voice, template=template, sha256=digest,
                          text_binding=text_binding, audio_output_node=audio_output_node,
                          cache_binding=cache_binding).model_dump(mode='json')
@@ -459,7 +471,8 @@ def put_preset(data_dir: Path, draft: dict, graph: dict, *, model: str, voice: s
 
 def delete_preset(draft: dict, preset_id: str) -> None:
     draft['presets'] = [p for p in draft.get('presets', []) if p['id'] != preset_id]
-    # Immutable templates may belong to last-good snapshots; never delete them here.
+    # Draft-only: the template file is removed after a successful save, once the
+    # saved configuration no longer references it. Snapshots keep their own copies.
 
 
 class _CancelAction(Exception):
@@ -475,6 +488,11 @@ class Wizard:
         # Builtin print treats markup literally. Injected Rich renderers must also
         # use markup=False; every external value is sanitized before rendering.
         self.output = output or plain_output()
+        # Templates written by this editor session, and those the on-disk
+        # configuration referenced when it was opened (or last saved).
+        self._imported: set[str] = set()
+        self._baseline_templates: set[str] = set()
+        self._saved = False
 
     def t(self, key: str, **values) -> str:
         return self.ui.t(MESSAGES, key, **values)
@@ -629,7 +647,8 @@ class Wizard:
                 return
             try:
                 put_preset(self.data_dir, draft, graph, model=model, voice=voice, text_binding=text,
-                           audio_output_node=output_node, cache_binding=cache, replace_id=old['id'] if old else None)
+                           audio_output_node=output_node, cache_binding=cache, replace_id=old['id'] if old else None,
+                           imported=self._imported)
                 return
             except (ValueError, OSError) as error:
                 self.error(error)
@@ -656,10 +675,45 @@ class Wizard:
             self.say_message('external_change')
             return 1
         save_config(self.data_dir, config)
+        self._saved = True
         status = get_status(self.data_dir)
         self.say('')
         self.say(self.t('saved_current' if status and status.get('config_digest') == config_digest(config) else 'saved_pending'))
+        self._cleanup_saved(config)
         return 0
+
+    def _cleanup_saved(self, config) -> None:
+        """Delete templates this session made unused; never fails a completed save."""
+        from .workflows import remove_unused_templates
+        candidates = self._baseline_templates | self._imported
+        try:
+            removed, failed = remove_unused_templates(self.data_dir, candidates, config)
+        except (OSError, ValueError):
+            removed, failed = [], ['?']
+        self._imported.clear()
+        self._baseline_templates = {preset.template for preset in config.presets}
+        if removed:
+            self.say(self.t('templates_removed', count=len(removed)))
+        if failed:
+            self.say(self.t('templates_cleanup_failed'))
+
+    def _cleanup_discarded(self, original: bytes | None) -> None:
+        """Delete files imported by an unsaved session, protected by the on-disk config."""
+        from .config import load_config
+        from .workflows import remove_unused_templates
+        if not self._imported:
+            return
+        path = self.data_dir / 'config.json'
+        current = path.read_bytes() if path.exists() else None
+        if current != original:
+            return  # changed externally: it might reference these files
+        if original is None:
+            from .config import AppConfig
+            config = AppConfig.model_construct(presets=[])  # nothing saved references them
+        else:
+            config = load_config(self.data_dir)  # invalid configuration raises: skip entirely
+        remove_unused_templates(self.data_dir, self._imported, config)
+        self._imported.clear()
 
     def return_from_editor(self, draft: dict, baseline: dict, original: bytes | None) -> int | None:
         if draft == baseline:
@@ -696,88 +750,100 @@ class Wizard:
         return options
 
     def run(self, *, section: str | None = None, first_run: bool = False) -> int:
-        from .config import load_config
         if section not in (None, 'server', 'models', 'presets', 'limits'):
             raise ValueError('invalid_wizard_section')
         with InstanceLock(self.data_dir, 'config'):
             path = self.data_dir / 'config.json'
             original = path.read_bytes() if path.exists() else None
-            draft = {'schema_version': 1, 'models': [], 'presets': []}
-            valid_existing = False
             try:
-                draft = load_config(self.data_dir).model_dump(mode='json')
-                valid_existing = True
-            except (ValueError, OSError) as error:
-                if original is not None:
-                    self.say_message('invalid_existing')
-                    self.error(error)
-            baseline = copy.deepcopy(draft)
-            if first_run:
-                self.say_lines(title_block(self.t('first_title')))
-            if first_run or not valid_existing:
-                self.server(draft)
-            if first_run:
-                if self.confirm('first_model'):
+                return self._edit(section, first_run, original)
+            finally:
+                if not self._saved:
                     try:
-                        self.model(draft)
-                    except _CancelAction:
+                        # Unsaved imports only; never masks the original exit/exception.
+                        self._cleanup_discarded(original)
+                    except (OSError, ValueError):
                         pass
-                    except (ValueError, OSError) as error:
-                        self.error(error)
-                if draft.get('models') and self.confirm('first_preset'):
-                    try:
-                        self.preset(draft)
-                    except _CancelAction:
-                        pass
-                    except (ValueError, OSError) as error:
-                        self.error(error)
+
+    def _edit(self, section: str | None, first_run: bool, original: bytes | None) -> int:
+        from .config import load_config
+        draft = {'schema_version': 1, 'models': [], 'presets': []}
+        valid_existing = False
+        try:
+            draft = load_config(self.data_dir).model_dump(mode='json')
+            valid_existing = True
+            self._baseline_templates = {p['template'] for p in draft.get('presets', [])}
+        except (ValueError, OSError) as error:
+            if original is not None:
+                self.say_message('invalid_existing')
+                self.error(error)
+        baseline = copy.deepcopy(draft)
+        if first_run:
+            self.say_lines(title_block(self.t('first_title')))
+        if first_run or not valid_existing:
+            self.server(draft)
+        if first_run:
+            if self.confirm('first_model'):
                 try:
+                    self.model(draft)
+                except _CancelAction:
+                    pass
+                except (ValueError, OSError) as error:
+                    self.error(error)
+            if draft.get('models') and self.confirm('first_preset'):
+                try:
+                    self.preset(draft)
+                except _CancelAction:
+                    pass
+                except (ValueError, OSError) as error:
+                    self.error(error)
+            try:
+                result = self.save(draft, original)
+                if result is not None:
+                    return result
+            except (ValueError, OSError) as error:
+                self.error(error)
+            self.say(self.t('first_cancel_save'))
+            section = None  # all retained draft fields remain repairable
+        while True:
+            options = self.menu(section)
+            action = self.ask(self.t('action')).strip().lower()
+            try:
+                if action in ('0', 'q'):
+                    result = self.return_from_editor(draft, baseline, original)
+                    if result is not None:
+                        return result
+                    continue
+                operation = options.get(action)
+                if operation in ('summary', 'list'):
+                    self.show_summary(draft, section)
+                elif operation == 'edit_server':
+                    self.server(draft)
+                elif operation in ('add_model', 'edit_model'):
+                    self.model(draft, edit=operation == 'edit_model')
+                elif operation == 'delete_model':
+                    model = self.choose(self.t('delete_model'), [(m['id'], m['id']) for m in draft.get('models', [])])
+                    if self.confirm('confirm_delete_model'):
+                        delete_model(draft, model, cascade=True)
+                elif operation in ('add_preset', 'edit_preset'):
+                    self.preset(draft, edit=operation == 'edit_preset')
+                elif operation == 'delete_preset':
+                    preset = self.choose(self.t('delete_preset'), [(p['id'], f"{p['model']} / {p['voice']}") for p in draft.get('presets', [])])
+                    if self.confirm('confirm_delete_preset'):
+                        delete_preset(draft, preset)
+                elif operation == 'edit_limits':
+                    self.limits(draft)
+                elif operation == 'save_menu':
                     result = self.save(draft, original)
                     if result is not None:
                         return result
-                except (ValueError, OSError) as error:
-                    self.error(error)
-                self.say(self.t('first_cancel_save'))
-                section = None  # all retained draft fields remain repairable
-            while True:
-                options = self.menu(section)
-                action = self.ask(self.t('action')).strip().lower()
-                try:
-                    if action in ('0', 'q'):
-                        result = self.return_from_editor(draft, baseline, original)
-                        if result is not None:
-                            return result
-                        continue
-                    operation = options.get(action)
-                    if operation in ('summary', 'list'):
-                        self.show_summary(draft, section)
-                    elif operation == 'edit_server':
-                        self.server(draft)
-                    elif operation in ('add_model', 'edit_model'):
-                        self.model(draft, edit=operation == 'edit_model')
-                    elif operation == 'delete_model':
-                        model = self.choose(self.t('delete_model'), [(m['id'], m['id']) for m in draft.get('models', [])])
-                        if self.confirm('confirm_delete_model'):
-                            delete_model(draft, model, cascade=True)
-                    elif operation in ('add_preset', 'edit_preset'):
-                        self.preset(draft, edit=operation == 'edit_preset')
-                    elif operation == 'delete_preset':
-                        preset = self.choose(self.t('delete_preset'), [(p['id'], f"{p['model']} / {p['voice']}") for p in draft.get('presets', [])])
-                        if self.confirm('confirm_delete_preset'):
-                            delete_preset(draft, preset)
-                    elif operation == 'edit_limits':
-                        self.limits(draft)
-                    elif operation == 'save_menu':
-                        result = self.save(draft, original)
-                        if result is not None:
-                            return result
-                    else:
-                        self.say(self.t('invalid_selection'))
-                except _CancelAction:
-                    continue
-                except (ValueError, OSError, KeyError, TypeError) as error:
-                    self.error(error)
-                    self.say(self.t('not_saved'))
+                else:
+                    self.say(self.t('invalid_selection'))
+            except _CancelAction:
+                continue
+            except (ValueError, OSError, KeyError, TypeError) as error:
+                self.error(error)
+                self.say(self.t('not_saved'))
 
 
 def run_wizard(data_dir: Path, *, ui=None, section=None, first_run=False, **io) -> int:

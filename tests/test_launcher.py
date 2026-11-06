@@ -346,3 +346,108 @@ def test_specific_lifecycle_errors_do_not_add_generic_diagnostic(tmp_path, monke
     output = capsys.readouterr().err
     assert UIContext().t(launcher.MESSAGES, key) in output
     assert 'PRIVATE' not in output and 'Invalid selection' not in output
+
+
+# --- Runtime cleanup -----------------------------------------------------------
+
+def snapshots(tmp_path, count):
+    config(tmp_path)
+    return [launcher.capture_snapshot(tmp_path) for _ in range(count)]
+
+
+def write_runtime(tmp_path, name, value):
+    (tmp_path / 'runtime' / name).write_text(json.dumps(value), encoding='utf-8')
+
+
+def stale(path, age=launcher.STALE_TEMP_SECONDS + 5):
+    path.write_text('x')
+    moment = time.time() - age
+    os.utime(path, (moment, moment))
+    return path.name
+
+
+def test_runtime_plan_protects_running_last_good_and_restart_snapshots(tmp_path):
+    running, good, candidate, fallback, old = snapshots(tmp_path, 5)
+    write_runtime(tmp_path, 'control.json', {'snapshot': running})
+    write_runtime(tmp_path, 'last-good.json', {'snapshot': good})
+    write_runtime(tmp_path, 'restart.json', {'state': 'fallback_running', 'snapshot': candidate, 'fallback': fallback})
+    plan = launcher.runtime_cleanup_plan(tmp_path, backend_running=True)
+    assert plan.snapshots == (old,) and plan.temporary == () and plan.size > 0
+
+
+def test_runtime_plan_lists_only_stale_private_temporary_files(tmp_path):
+    runtime = tmp_path / 'runtime'
+    runtime.mkdir()
+    old = stale(runtime / '.private-old')
+    (runtime / '.private-fresh').write_text('x')
+    for name in ('tasks.sqlite3', 'tasks.sqlite3-wal', 'control.json', 'config.lock', 'other.tmp'):
+        stale(runtime / name)
+    (runtime / 'snapshots').mkdir()
+    (runtime / 'snapshots' / 'not-a-uuid').mkdir()
+    (runtime / 'snapshots' / str(uuid.uuid4()).upper()).mkdir()
+    (runtime / 'snapshots' / (str(uuid.uuid4()))).write_text('file, not directory')
+    plan = launcher.runtime_cleanup_plan(tmp_path, backend_running=False)
+    assert plan.snapshots == () and plan.temporary == (old,)
+
+
+def test_running_backend_with_unknown_snapshot_refuses(tmp_path):
+    snapshots(tmp_path, 1)
+    with pytest.raises(ValueError, match='runtime_backend_snapshot_unknown'):
+        launcher.runtime_cleanup_plan(tmp_path, backend_running=True)
+    write_runtime(tmp_path, 'control.json', {'snapshot': '../escape'})
+    with pytest.raises(ValueError):
+        launcher.runtime_cleanup_plan(tmp_path, backend_running=True)
+
+
+def test_runtime_plan_without_runtime_directory(tmp_path):
+    assert launcher.runtime_cleanup_plan(tmp_path, backend_running=False).count == 0
+
+
+def test_clean_runtime_removes_rechecked_plan_only(tmp_path):
+    good, old, later = snapshots(tmp_path, 3)
+    write_runtime(tmp_path, 'last-good.json', {'snapshot': good})
+    runtime = tmp_path / 'runtime'
+    temporary = stale(runtime / '.private-leftover')
+    plan = launcher.runtime_cleanup_plan(tmp_path, backend_running=False)
+    assert set(plan.snapshots) == {old, later}
+    # Became protected after the user saw the list: must survive.
+    write_runtime(tmp_path, 'last-good.json', {'snapshot': later})
+    removed, failed = launcher.clean_runtime(tmp_path, plan)
+    assert failed == [] and sorted(removed) == sorted(['snapshots/' + old, temporary])
+    assert sorted(path.name for path in (runtime / 'snapshots').iterdir()) == sorted([good, later])
+    assert not (runtime / temporary).exists()
+    launcher.snapshot_config(tmp_path, later)  # the protected snapshot is still complete
+
+
+def test_clean_runtime_fails_closed_while_start_or_config_locked(tmp_path, monkeypatch):
+    from comfybridge.platform_windows import AlreadyRunning
+    old, = snapshots(tmp_path, 1)
+    plan = launcher.runtime_cleanup_plan(tmp_path, backend_running=False)
+    class Busy:
+        def __init__(self, _data, purpose):
+            self.purpose = purpose
+        def __enter__(self):
+            if self.purpose == 'start':
+                raise AlreadyRunning('start_locked')
+            return self
+        def __exit__(self, *exc):
+            return False
+    monkeypatch.setattr(launcher, 'InstanceLock', Busy)
+    with pytest.raises(AlreadyRunning):
+        launcher.clean_runtime(tmp_path, plan)
+    assert (tmp_path / 'runtime' / 'snapshots' / old).is_dir()
+
+
+def test_clean_runtime_with_running_backend_keeps_its_snapshot(tmp_path, monkeypatch):
+    from comfybridge.platform_windows import AlreadyRunning
+    running, old = snapshots(tmp_path, 2)
+    write_runtime(tmp_path, 'control.json', {'snapshot': running})
+    plan = launcher.RuntimeCleanup(snapshots=(running, old))  # forged plan
+    real = launcher.InstanceLock
+    def lock(data, purpose):
+        if purpose == 'backend':
+            raise AlreadyRunning('backend_locked')
+        return real(data, purpose)
+    monkeypatch.setattr(launcher, 'InstanceLock', lock)
+    assert launcher.clean_runtime(tmp_path, plan) == (['snapshots/' + old], [])
+    assert (tmp_path / 'runtime' / 'snapshots' / running).is_dir()

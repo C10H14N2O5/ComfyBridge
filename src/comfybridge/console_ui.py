@@ -11,7 +11,7 @@ from .console_layout import confirm_lines, emit, kv_lines, rich_output, rule, ti
 from .control import ControlClient, config_digest, get_status
 from .i18n import UIContext, safe_text
 from .monitor import monitor, overview_rows, reason_text
-from .platform_windows import configure_startup, startup_shortcut
+from .platform_windows import AlreadyRunning, InstanceLock, configure_startup, startup_shortcut
 from .ui_preferences import is_interactive, resolve_ui, select_language
 from .wizard import diagnostic, run_wizard, summary_lines
 
@@ -92,6 +92,43 @@ MESSAGES = {
     'advanced_2': ('[2] 查看脱敏配置摘要', '[2] View redacted configuration summary'),
     'advanced_3': ('[3] 强制停止后台（谨慎）', '[3] Force stop backend (caution)'),
     'advanced_4': ('[4] 核对状态不明的任务（谨慎）', '[4] Resolve uncertain tasks (caution)'),
+    'advanced_5': ('[5] 清理闲置工作流文件', '[5] Clean up unused workflow files'),
+    'cleanup_title': ('清理闲置工作流文件', 'Clean up unused workflow files'),
+    'cleanup_count': ('未被引用的文件', 'Unreferenced files'),
+    'cleanup_size': ('合计大小', 'Total size'),
+    'cleanup_none': ('没有未被当前配置引用的工作流文件。', 'No workflow files are unreferenced by the current configuration.'),
+    'cleanup_config_invalid': ('配置缺失或无效，无法判断哪些模板在用；未删除任何文件。',
+                               'Configuration missing or invalid; cannot tell which templates are in use. No files were deleted.'),
+    'cleanup_locked': ('配置编辑器或其他操作正在使用此数据目录，请关闭后重试；未删除任何文件。',
+                       'The configuration editor or another operation is using this data directory; close it and retry. No files were deleted.'),
+    'cleanup_warning': ('永久删除以上 {count} 个未被当前已保存配置引用的工作流文件？\n'
+                        '  - 当前配置引用的模板不会删除\n'
+                        '  - 运行中的后台不受影响（已加载，且启动快照有副本）\n'
+                        '  - 删除后无法恢复；config.json.bak 引用的模板不受保护',
+                        'Permanently delete the {count} workflow file(s) above, unreferenced by the saved configuration?\n'
+                        '  - Templates referenced by the current configuration are kept\n'
+                        '  - A running backend is unaffected (already loaded; its snapshot has copies)\n'
+                        '  - This cannot be undone; templates referenced only by config.json.bak are not protected'),
+    'advanced_6': ('[6] 清理运行时临时文件', '[6] Clean up runtime temporary files'),
+    'runtime_title': ('清理运行时临时文件', 'Clean up runtime temporary files'),
+    'runtime_snapshots': ('旧启动快照', 'Old startup snapshots'),
+    'runtime_temporary': ('残留临时文件', 'Leftover temporary files'),
+    'runtime_none': ('没有可清理的运行时临时文件。', 'There are no runtime temporary files to clean up.'),
+    'runtime_unknown': ('后台正在运行，但无法确认其使用的快照；未删除任何文件。',
+                        'A backend is running but its snapshot cannot be identified; no files were deleted.'),
+    'runtime_locked': ('后台启动、重启或配置编辑正在进行，请完成后重试；未删除任何文件。',
+                       'A backend start, restart or configuration edit is in progress; retry when it finishes. No files were deleted.'),
+    'runtime_warning': ('永久删除以上 {count} 项运行时临时文件？\n'
+                        '  - 运行中、上次成功启动及重启记录所用的快照会保留\n'
+                        '  - 任务账本、状态文件和锁文件不受影响\n'
+                        '  - 删除后无法恢复',
+                        'Permanently delete the {count} runtime item(s) above?\n'
+                        '  - Snapshots of the running backend, last successful start and recorded restart are kept\n'
+                        '  - The task journal, state files and lock files are unaffected\n'
+                        '  - This cannot be undone'),
+    'runtime_done': ('已删除 {count} 项运行时临时文件。', 'Deleted {count} runtime item(s).'),
+    'cleanup_done': ('已删除 {count} 个闲置工作流文件。', 'Deleted {count} unused workflow file(s).'),
+    'cleanup_failed': ('{count} 个文件未能删除，请检查文件占用或权限。', '{count} file(s) could not be deleted; check file locks or permissions.'),
     'summary_title': ('配置摘要', 'Configuration summary'),
     'data_dir': ('数据目录', 'Data directory'),
     'startup': ('登录自启动设置', 'Login startup settings'),
@@ -303,10 +340,88 @@ class Home:
             ControlClient(self.data_dir).command('resolve', {'task_id': task_id, 'acknowledge': True})
             self.result('resolve_done')
 
+    def cleanup_workflows(self):
+        """List, confirm, then delete templates the saved configuration no longer uses."""
+        from .workflows import remove_unused_templates, unused_templates
+        try:
+            candidates = unused_templates(self.data_dir, load_config(self.data_dir))
+        except (ValueError, OSError):
+            self.result('cleanup_config_invalid')
+            return
+        if not candidates:
+            self.result('cleanup_none')
+            return
+        size = 0
+        for relative in candidates:
+            try:
+                size += (self.data_dir / relative).stat().st_size
+            except OSError:
+                pass
+        self.lines(title_block(self.t('cleanup_title')))
+        self.lines(kv_lines([(self.t('cleanup_count'), str(len(candidates))),
+                             (self.t('cleanup_size'), f'{size / 1024:.1f} KiB')]))
+        self.output('')
+        for relative in candidates:
+            self.output('  ' + safe_text(relative.split('/', 1)[1]))
+        self.output('')
+        if not self.confirm('cleanup_warning', count=len(candidates)):
+            return
+        try:
+            # No lock while waiting for the user; recheck against the latest saved config.
+            with InstanceLock(self.data_dir, 'config'):
+                try:
+                    config = load_config(self.data_dir)
+                except (ValueError, OSError):
+                    self.result('cleanup_config_invalid')
+                    return
+                removed, failed = remove_unused_templates(self.data_dir, candidates, config)
+        except AlreadyRunning:
+            self.result('cleanup_locked')
+            return
+        self.result('cleanup_done', count=len(removed))
+        if failed:
+            self.say('cleanup_failed', count=len(failed))
+
+    def cleanup_runtime(self):
+        """List, confirm, then delete old snapshots and stale private temporary files."""
+        from . import launcher
+        try:
+            plan = launcher.runtime_cleanup_plan(self.data_dir,
+                                                 backend_running=launcher.backend_lock_held(self.data_dir))
+        except ValueError:
+            self.result('runtime_unknown')
+            return
+        if not plan.count:
+            self.result('runtime_none')
+            return
+        self.lines(title_block(self.t('runtime_title')))
+        self.lines(kv_lines([(self.t('runtime_snapshots'), str(len(plan.snapshots))),
+                             (self.t('runtime_temporary'), str(len(plan.temporary))),
+                             (self.t('cleanup_size'), f'{plan.size / 1024:.1f} KiB')]))
+        self.output('')
+        for name in plan.snapshots:
+            self.output('  snapshots/' + safe_text(name))
+        for name in plan.temporary:
+            self.output('  ' + safe_text(name))
+        self.output('')
+        if not self.confirm('runtime_warning', count=plan.count):
+            return
+        try:
+            removed, failed = launcher.clean_runtime(self.data_dir, plan)
+        except AlreadyRunning:
+            self.result('runtime_locked')
+            return
+        except ValueError:
+            self.result('runtime_unknown')
+            return
+        self.result('runtime_done', count=len(removed))
+        if failed:
+            self.say('cleanup_failed', count=len(failed))
+
     def advanced(self):
         while True:
             self.lines(title_block(self.t('advanced')))
-            for number in range(1, 5):
+            for number in range(1, 7):
                 self.output(self.t('advanced_' + str(number)))
             self.output('')
             self.output(self.t('back'))
@@ -322,6 +437,10 @@ class Home:
                     self.stop(force=True)
                 elif action == '4':
                     self.resolve()
+                elif action == '5':
+                    self.cleanup_workflows()
+                elif action == '6':
+                    self.cleanup_runtime()
                 else:
                     self.output(self.t('invalid'))
                     continue

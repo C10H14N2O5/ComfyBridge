@@ -360,7 +360,7 @@ def test_eof_discards_unsaved_draft_without_actions(tmp_path, no_actions):
     assert (tmp_path / 'config.json').read_bytes() == original
 
 
-def test_scoped_preset_import_and_delete_registration_only(tmp_path, no_actions):
+def test_scoped_preset_delete_removes_template_only_after_save(tmp_path, no_actions):
     data = draft()
     put_model(data, 'm')
     save_config(tmp_path, AppConfig.model_validate(data))
@@ -369,10 +369,15 @@ def test_scoped_preset_import_and_delete_registration_only(tmp_path, no_actions)
     io = ScriptedIO(['2', '1', 'v', str(source), '1', '3', '2', '1', 's', '1'])
     assert run_wizard(tmp_path, section='presets', **io.options()) == 0
     template = tmp_path / load_config(tmp_path).presets[0].template
+    # Deleting without saving keeps the template: the saved config still uses it.
+    io = ScriptedIO(['4', '1', '1', '0', '2'])
+    assert run_wizard(tmp_path, section='presets', **io.options()) == 1
+    assert template.exists()
     io = ScriptedIO(['4', '1', '1', 's', '1'])
     assert run_wizard(tmp_path, section='presets', **io.options()) == 0
     assert load_config(tmp_path).presets == []
-    assert template.exists()
+    assert not template.exists()
+    assert any('Deleted 1 unused workflow template' in line for line in io.messages)
 
 
 def test_external_menu_labels_are_terminal_safe_and_markup_literal(tmp_path):
@@ -756,3 +761,135 @@ def test_multiple_validation_errors_are_separate_safe_bullets():
     assert len(lines) == 3
     assert lines[1:] == ['  - server.api_key: string_type', '  - server.listen_port: int_type']
     assert 'PRIVATE' not in '\n'.join(lines)
+
+
+# --- Automatic template cleanup ------------------------------------------------
+
+_BINDINGS = dict(text_binding={'node_id': '2', 'field': 'text'}, audio_output_node='3',
+                 cache_binding={'node_id': '1', 'field': 'keep_models_cached'})
+
+
+def saved_with_presets(tmp_path, voices=('v',)):
+    data = draft()
+    put_model(data, 'm')
+    for voice in voices:
+        put_preset(tmp_path, data, graph(), model='m', voice=voice, **_BINDINGS)
+    save_config(tmp_path, AppConfig.model_validate(data))
+    return {p.voice: tmp_path / p.template for p in load_config(tmp_path).presets}
+
+
+def other_source(tmp_path, name='other.json', text='another template'):
+    changed = graph()
+    changed['2']['inputs']['text'] = text
+    source = tmp_path / name
+    source.write_text(json.dumps(changed))
+    return source
+
+
+def workflow_files(tmp_path):
+    return sorted(path.name for path in (tmp_path / 'workflows').iterdir())
+
+
+def test_saved_delete_keeps_templates_still_referenced(tmp_path, no_actions):
+    templates = saved_with_presets(tmp_path, ('a', 'b'))
+    io = ScriptedIO(['4', '1', '1', 's', '1'])
+    assert run_wizard(tmp_path, section='presets', **io.options()) == 0
+    assert [p.voice for p in load_config(tmp_path).presets] == ['b']
+    assert not templates['a'].exists() and templates['b'].exists()
+
+
+def test_edit_replacing_template_removes_old_version_after_save(tmp_path, no_actions):
+    old = saved_with_presets(tmp_path)['v']
+    source = other_source(tmp_path)
+    io = ScriptedIO(['3', '1', '1', '', str(source), '1', '3', '2', '1', 's', '1'])
+    assert run_wizard(tmp_path, section='presets', **io.options()) == 0
+    new = tmp_path / load_config(tmp_path).presets[0].template
+    assert new != old and new.exists() and not old.exists()
+    assert workflow_files(tmp_path) == [new.name]
+
+
+def test_cascade_model_delete_removes_templates_after_save(tmp_path, no_actions):
+    template = saved_with_presets(tmp_path)['v']
+    io = ScriptedIO(['4', '1', '1', 's', '1'])
+    assert run_wizard(tmp_path, section='models', **io.options()) == 0
+    assert load_config(tmp_path).presets == [] and not template.exists()
+
+
+def test_discarded_import_is_removed_and_saved_templates_kept(tmp_path, no_actions):
+    template = saved_with_presets(tmp_path)['v']
+    source = other_source(tmp_path)
+    io = ScriptedIO(['2', '1', 'w', str(source), '1', '3', '2', '1', '0', '2'])
+    assert run_wizard(tmp_path, section='presets', **io.options()) == 1
+    assert workflow_files(tmp_path) == [template.name]
+
+
+def test_import_then_delete_unchanged_draft_removes_import(tmp_path, no_actions):
+    template = saved_with_presets(tmp_path)['v']
+    source = other_source(tmp_path)
+    io = ScriptedIO(['2', '1', 'w', str(source), '1', '3', '2', '1', '4', '2', '1', '0'])
+    assert run_wizard(tmp_path, section='presets', **io.options()) == 1
+    assert workflow_files(tmp_path) == [template.name]
+
+
+def test_eof_after_import_removes_unsaved_import(tmp_path, no_actions):
+    template = saved_with_presets(tmp_path)['v']
+    source = other_source(tmp_path)
+    answers = iter(['2', '1', 'w', str(source), '1', '3', '2', '1'])
+    def ask(_):
+        try:
+            return next(answers)
+        except StopIteration:
+            raise EOFError()
+    assert run_wizard(tmp_path, section='presets', ask=ask, output=lambda _: None) == 1
+    assert workflow_files(tmp_path) == [template.name]
+
+
+def test_external_change_skips_all_template_cleanup(tmp_path, no_actions):
+    saved_with_presets(tmp_path)
+    source = other_source(tmp_path)
+    before = None
+    answers = iter(['2', '1', 'w', str(source), '1', '3', '2', '1', '4', '1', '1', 's', 'Y'])
+    def ask(_):
+        nonlocal before
+        answer = next(answers)
+        if answer == 'Y':
+            changed = load_config(tmp_path)
+            changed.server.listen_port = 19999
+            save_config(tmp_path, changed)
+            before = workflow_files(tmp_path)
+        return answer
+    assert Wizard(tmp_path, ask=ask, output=lambda _: None).run(section='presets') == 1
+    assert len(before) == 2 and workflow_files(tmp_path) == before
+
+
+def test_invalid_existing_config_discard_keeps_imports(tmp_path, no_actions):
+    templates = saved_with_presets(tmp_path)
+    (tmp_path / 'config.json').write_bytes(b'{"broken": true}')
+    source = other_source(tmp_path)
+    io = ScriptedIO(['', '', '', '3', 'm', '1', '6', '1', 'w', str(source), '1', '3', '2', '1', '0', '2'],
+                    ['manual-key'])
+    assert run_wizard(tmp_path, **io.options()) == 1
+    assert templates['v'].exists() and len(workflow_files(tmp_path)) == 2
+
+
+def test_cleanup_failure_never_fails_completed_save(tmp_path, no_actions, monkeypatch):
+    template = saved_with_presets(tmp_path)['v']
+    def broken(*_args, **_kwargs):
+        raise PermissionError('private path')
+    monkeypatch.setattr('comfybridge.workflows.remove_unused_templates', broken)
+    io = ScriptedIO(['4', '1', '1', 's', '1'])
+    assert run_wizard(tmp_path, section='presets', **io.options()) == 0
+    assert load_config(tmp_path).presets == [] and template.exists()
+    assert io.messages[-1] == MESSAGES['templates_cleanup_failed'][1]
+    assert 'private path' not in '\n'.join(io.messages)
+
+
+def test_rejected_binding_import_is_tracked_for_cleanup(tmp_path):
+    data = draft()
+    put_model(data, 'm')
+    imported = set()
+    with pytest.raises(ValueError):
+        put_preset(tmp_path, data, graph(), model='m', voice='v', imported=imported,
+                   text_binding={'node_id': '3', 'field': 'filename_prefix'}, audio_output_node='3')
+    assert data['presets'] == [] and len(imported) == 1
+    assert (tmp_path / next(iter(imported))).exists()

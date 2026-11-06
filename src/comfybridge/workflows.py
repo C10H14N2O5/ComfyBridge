@@ -8,7 +8,8 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any
+import re
+from typing import Any, Iterable
 from uuid import UUID
 
 from .config import (AppConfig, IdleReleaseConfig, PresetConfig, confined_path, parse_json_strict,
@@ -634,3 +635,85 @@ def import_template(data_dir: Path, document: dict, model: str, voice: str, pres
     finally:
         staged.unlink(missing_ok=True)
     return relative, digest
+
+
+# Only names produced by import_template are ever eligible for removal.
+_PRESET_TEMPLATE = re.compile(
+    r"preset-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9a-f]{64}\.json\Z")
+
+
+def referenced_templates(config: AppConfig) -> set[str]:
+    """Template paths of the given configuration, case-normalized for this OS."""
+    return {os.path.normcase(preset.template) for preset in config.presets}
+
+
+def _is_fs_link(path: Path) -> bool:
+    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
+def managed_templates(data_dir: Path) -> list[str]:
+    """Regular, non-link preset template files directly inside ``workflows``.
+
+    Hand-placed JSON, temporary files, subdirectories and links are never listed.
+    """
+    root = Path(data_dir).resolve()
+    directory = confined_path(root, "workflows")
+    if _is_fs_link(directory) or not directory.is_dir():
+        return []
+    result = []
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            path = Path(entry.path)
+            if (_PRESET_TEMPLATE.fullmatch(entry.name) and not _is_fs_link(path)
+                    and entry.is_file(follow_symlinks=False)):
+                result.append("workflows/" + entry.name)
+    return sorted(result)
+
+
+def unused_templates(data_dir: Path, config: AppConfig) -> list[str]:
+    """Managed preset templates not referenced by ``config``."""
+    referenced = referenced_templates(config)
+    return [item for item in managed_templates(data_dir) if os.path.normcase(item) not in referenced]
+
+
+def remove_unused_templates(data_dir: Path, candidates: Iterable[str],
+                            config: AppConfig) -> tuple[list[str], list[str]]:
+    """Permanently delete candidates that ``config`` does not reference.
+
+    Callers should hold the configuration lock. Ineligible candidates (referenced,
+    not an import_template name, outside ``workflows`` or a link) are skipped
+    silently. Returns ``(removed, failed)``; a missing file is neither.
+    """
+    root = Path(data_dir).resolve()
+    referenced = referenced_templates(config)
+    removed: list[str] = []
+    failed: list[str] = []
+    try:
+        directory = confined_path(root, "workflows")
+        if _is_fs_link(directory) or not directory.is_dir():
+            return removed, failed
+        workflow_root = directory.resolve()
+    except (ValueError, OSError):
+        return removed, failed
+    for relative in sorted({item for item in candidates if type(item) is str}):
+        if os.path.normcase(relative) in referenced:
+            continue
+        parts = relative.split("/")
+        if len(parts) != 2 or parts[0] != "workflows" or not _PRESET_TEMPLATE.fullmatch(parts[1]):
+            continue
+        try:
+            validate_template_path(relative)
+            path = confined_path(root, relative)
+            if path.resolve().parent != workflow_root or _is_fs_link(path):
+                continue
+            if not path.exists():
+                continue
+            if not path.is_file():
+                continue
+            path.unlink(missing_ok=True)
+            removed.append(relative)
+        except OSError:
+            failed.append(relative)
+        except ValueError:
+            continue
+    return removed, failed
