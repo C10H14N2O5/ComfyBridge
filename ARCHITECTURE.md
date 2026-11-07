@@ -1,19 +1,17 @@
-# Implementation contract — ComfyBridge 0.5.0
+# Implementation contract — ComfyBridge 0.5.1
 
-This document records the original 2026-10-23 contracts and approved 2026-10-24 and 2026-10-27 extensions. It is not a completion report. The [requirements record](<todo.md>) retains historical decisions. No code may modify ComfyUI installation/canvas, clear global queues/history, or interrupt running GPU jobs. The explicit v0.3.0 `/free` policy is an authorized instance-wide model/memory release, not a targeted per-model operation.
+This document records the original 2026-10-23 contracts and approved 2026-10-24 and 2026-10-27 extensions. It is not a completion report; historical decisions are available in the Git history. No code may modify ComfyUI installation/canvas, clear global queues/history, or interrupt running GPU jobs. The explicit v0.3.0 `/free` policy is an authorized instance-wide model/memory release, not a targeted per-model operation.
 
 ## Scope and milestones
 
-1. Validate supplied Example graph, at most four direct experimental generations. User approved use of the supplied audio workflow. Source attachment remains read-only. Experiment progress is persisted under artifacts/experiments; never rerun a case with an existing intent record.
+1. Validate the example IndexTTS 2.5 four-node graph against a live ComfyUI with bounded, explicitly authorized experiments; never rerun an experiment that already has an intent record. Source workflows remain read-only and experiment progress is persisted under artifacts/experiments.
 2. Implement core service and mock failure tests.
 3. Implement independent local console monitor, wizard and lifecycle.
 4. Build/test a Windows x64 directory distribution; report unverified AstrBot, second real voice, and clean-VM acceptance explicitly.
 
-## Technology and ownership
+## Technology
 
-Python 3.13 isolated uv environment, FastAPI/Pydantic v2/Uvicorn single worker/httpx, SQLite, Rich, pytest/pytest-asyncio, FFmpeg/ffprobe, PyInstaller onedir. No global Python/ComfyUI changes.
-
-Package `src/comfybridge`. Lead owns scaffolding, audio.py, logging_utils.py, build/experiments/docs/integration. Foundation teammate owns config.py, workflows.py and tests/test_config.py,test_workflows.py. Backend teammate owns service.py, api.py, comfy_client.py, journal.py and corresponding tests. Desktop teammate owns launcher.py, control.py, monitor.py, wizard.py, platform_windows.py and corresponding tests. Do not write outside your assigned scopes without messaging lead.
+Python 3.13 isolated uv environment, FastAPI/Pydantic v2/Uvicorn single worker/httpx, SQLite, Rich, pytest/pytest-asyncio, FFmpeg/ffprobe, PyInstaller onedir. No global Python/ComfyUI changes. The package lives in `src/comfybridge`; `comfybridge.__version__` is the single source of the version number.
 
 ## Shared data/config contract
 
@@ -33,7 +31,7 @@ Identifiers model/voice: exact case, ASCII `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. Du
 
 Exports:
 - `load_config(data_dir:Path) -> AppConfig` reads data_dir/config.json strict JSON (duplicate keys rejected).
-- `save_config(data_dir:Path, config:AppConfig) -> None` validate, atomic save + previous version backup; no hot reload. Read existing before overwrite per tooling rules while coding.
+- `save_config(data_dir:Path, config:AppConfig) -> None` validate, atomic save + previous version backup; no hot reload.
 - `parse_json_strict(data:str|bytes) -> object` for duplicate keys/nonfinite rejection (can share API).
 
 workflows.py:
@@ -58,7 +56,7 @@ service.py:
 
 api.py:
 - `create_app(config:AppConfig, data_dir:Path, service:BridgeService|None=None) -> FastAPI`; put `app.state.bridge=service`; manage service start/close via lifespan when not externally managed.
-- `SpeechRequest` strict required model/voice/input str; response_format wav|mp3 default mp3, speed numeric=1 only (not bool), instructions omitted/blank only; null/unknown/duplicate keys rejected. UTF-8 Unicode scalar count <= configured limit, never trim original input except empty check. 64KiB body limit including chunked, API key before parsing.
+- `SpeechRequest` strict required model/voice/input str; response_format wav|mp3 default mp3, speed numeric=1 only (not bool), instructions omitted/blank only; null/unknown/duplicate keys rejected. UTF-8 Unicode scalar count <= configured limit, never trim original input except empty check. 64KiB body limit including chunked, API key before parsing. Exactly one Authorization header; the `Bearer` auth-scheme is matched case-insensitively (RFC 7235) and the key with a constant-time exact comparison.
 - GET /v1/models: authenticated OpenAI list, dedup registered models even when Comfy offline.
 - POST /v1/audio/speech: raw WAV/MP3, no-store, request-id. Error envelope error.message/type/param/code, sanitized. 400 invalid,401 auth,413 body,429 capacity,502 remote/media,503 unready/draining/uncertain,504 deadline.
 - No business management endpoints, no CORS. x-should-retry:false after possible submission; does not guarantee arbitrary client behavior.
@@ -75,7 +73,7 @@ Delete only own observed/acknowledged pending via POST /queue {delete:[id]}; 200
 
 One processing slot default and 8 waiting. Client deadline300 includes waiting, download/transcode. Active poll1s/offline5s. Local invalid config fails service startup but management UI can repair. Remote schemas per-preset readiness. Offline new TTS503; GET models and monitor work. Existing admitted jobs don't get reposted. No exactly-once promise across client retries.
 
-## Audio contract (lead implementation)
+## Audio contract
 
 `audio.py`:
 - `AudioError(code:str, message:str='Audio processing failed')` sanitized error.

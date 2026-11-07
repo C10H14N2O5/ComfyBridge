@@ -37,7 +37,7 @@
       "model": "index-tts-2.5",
       "voice": "example",
       "template": "workflows/index-tts-2.5_example.json",
-      "sha256": "199359df0cac2975bc679a6768a2fd56683b608461e1f98893f5084d591147c7",
+      "sha256": "f4bac0d2bf7337ff3383997cfcc34aef3594b3765d71057ecd3f1a2adce8609c",
       "text_binding": {"node_id": "2", "field": "text"},
       "audio_output_node": "4",
       "cache_binding": {"node_id": "3", "field": "keep_models_cached"}

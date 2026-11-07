@@ -128,8 +128,13 @@ def create_app(config: AppConfig, data_dir: Path, service: BridgeService | None 
 
     def authenticate(request: Request):
         values = request.headers.getlist("authorization")
-        expected = ("Bearer " + config.server.api_key).encode("utf-8")
-        if len(values) != 1 or not hmac.compare_digest(values[0].encode("utf-8"), expected):
+        if len(values) != 1:
+            raise BridgeError("invalid_api_key", 401)
+        # RFC 7235: the auth-scheme token is case-insensitive; the credential is not.
+        scheme, separator, token = values[0].partition(" ")
+        expected = config.server.api_key.encode("utf-8")
+        if (not separator or scheme.casefold() != "bearer"
+                or not hmac.compare_digest(token.encode("utf-8"), expected)):
             raise BridgeError("invalid_api_key", 401)
 
     @app.exception_handler(HTTPException)

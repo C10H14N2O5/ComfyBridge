@@ -2,6 +2,23 @@
 
 记录 ComfyBridge 各版本的主要变化。版本按新到旧排列，日期使用北京时间（UTC+8）。
 
+## v0.5.1 — 2026-11-07
+
+首个公开版本：以 MIT 许可证在 [GitHub](https://github.com/C10H14N2O5/ComfyBridge) 开源。
+
+### 改进／变更
+
+- 默认 ComfyUI 地址改为 `http://127.0.0.1:8188`。只影响向导预填值和未写 `base_url` 的手写配置；已保存的配置不受影响。
+- `Authorization` 头中的 `Bearer` scheme 不再区分大小写（`bearer`、`BEARER` 均可）；API Key 仍精确比较。
+- 示例工作流改名为 `examples/workflows/index-tts-2.5_example.json`，示例音色 ID 改为 `example`，参考音频文件名改为 `example.wav`。
+- `pywin32` 移到开发依赖。
+- 版本号统一来自 `comfybridge.__version__`，构建脚本从同一处读取。
+- 新增 MIT `LICENSE`、英文 README、贡献指南、安全策略、Issue／PR 模板和 GitHub CI；移除仓库中的内部需求记录文件。
+
+### 保持不变
+
+- 配置结构、HTTP TTS API、状态 JSON、任务账本、安装／更新流程不变；从上一版本原目录更新无需修改配置。
+
 ## v0.5.0 — 2026-11-06
 
 ### 改进
@@ -27,7 +44,7 @@
 ### 保持不变
 
 - HTTP TTS API、配置结构、状态 JSON、日志格式和任务恢复语义不变；已登记的预设无需修改，原有绑定继续有效。
-- 原始 WebUI 工作流导入仍只支持 Example 风格四节点平铺结构；其他工作流请导出 API 格式 JSON。
+- 原始 WebUI 工作流导入仍只支持示例四节点平铺结构；其他工作流请导出 API 格式 JSON。
 
 ## v0.4.1 — 2026-10-27
 
@@ -133,7 +150,7 @@
 
 - 首个 Windows x86_64 MVP：在 AstrBot 等 OpenAI 兼容客户端与局域网 ComfyUI／IndexTTS 2.5 之间提供 TTS 中间层。
 - 带 Bearer Key 鉴权的 `POST /v1/audio/speech` 和 `GET /v1/models`；支持 WAV 与 MP3，省略格式时默认 MP3。
-- 按模型和音色精确路由工作流；支持模型／音色管理、API 格式工作流导入、文本及音频出口绑定，以及已知 Example 风格 WebUI 图转换。
+- 按模型和音色精确路由工作流；支持模型／音色管理、API 格式工作流导入、文本及音频出口绑定，以及已知示例四节点 WebUI 图转换。
 - 模型级缓存策略：跟随工作流、保留缓存或生成后不保留缓存，通过明确绑定控制节点输入。
 - 严格 JSON 与请求校验、有界等待队列、处理槽限制、超时、断连处理及临时音频清理。
 - SQLite 持久任务账本：提交前记录意图，提交结果不明时暂停新提交并核对，不自动重放；支持人工确认放弃核对。
@@ -145,7 +162,7 @@
 ### 验证与边界
 
 - 冻结源码回归：368 项通过、5 项因 Windows 文件符号链接权限跳过。
-- 四次真实 Example 直接工作流实验及两次真实 Bridge HTTP／OpenAI SDK WAV、MP3 调用成功。
+- 四次真实示例工作流直接实验及两次真实 Bridge HTTP／OpenAI SDK WAV、MP3 调用成功。
 - 本机隔离 PATH 的 EXE、包内转码及后台生命周期检查通过；不等同于干净 Windows 虚拟机验收。
 - 不包含正式 API Key、模型权重或参考音频；参考音频和模型仍由 ComfyUI 管理。
 - 历史验收记录可通过 Git 历史查阅。

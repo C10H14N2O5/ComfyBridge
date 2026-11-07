@@ -1,0 +1,75 @@
+name: 问题报告 / Bug report
+description: 报告 ComfyBridge 的错误或异常行为 / Report a bug or unexpected behavior in ComfyBridge
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **请勿粘贴 API Key 或完整的 `config.json`。** 日志和配置片段请先脱敏（隐藏 Key、内部地址和个人信息）。安全漏洞请不要在这里提交，请按 [安全策略](https://github.com/C10H14N2O5/ComfyBridge/security/policy) 私下报告。
+
+        **Do not paste API keys or your full `config.json`.** Redact logs and configuration snippets (keys, internal addresses, personal data) first. Do not file security vulnerabilities here; report them privately per the [security policy](https://github.com/C10H14N2O5/ComfyBridge/security/policy).
+  - type: input
+    id: version
+    attributes:
+      label: ComfyBridge 版本 / ComfyBridge version
+      description: 主菜单标题或 Setup 中显示的版本 / Shown in the home menu title or in Setup
+      placeholder: "0.5.1"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows 版本 / Windows version
+      placeholder: "Windows 11 23H2 x64"
+    validations:
+      required: true
+  - type: input
+    id: comfyui
+    attributes:
+      label: ComfyUI 版本 / ComfyUI version
+      placeholder: "v0.41.3"
+    validations:
+      required: true
+  - type: input
+    id: index-tts
+    attributes:
+      label: ComfyUI-Index-TTS 提交 / ComfyUI-Index-TTS commit
+      description: 节点包的 Git 提交哈希；未使用时填 N/A / Git commit hash of the node pack, or N/A if not used
+      placeholder: "abc1234"
+  - type: input
+    id: client
+    attributes:
+      label: 调用端 / Client
+      description: 调用 ComfyBridge 的客户端及版本 / The client calling ComfyBridge and its version
+      placeholder: "AstrBot v4.x / OpenAI Python SDK 1.x"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为 / Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为 / Actual behavior
+      description: 包括 HTTP 状态码和错误体（如有） / Include the HTTP status code and error body if any
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志 / Sanitized logs
+      description: Monitor 或 `data\logs` 中的相关日志，请先脱敏 / Relevant Monitor or `data\logs` entries, redacted first
+      render: text

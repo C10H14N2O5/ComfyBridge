@@ -608,7 +608,7 @@ def test_live_failure_codes_sanitized(tmp_path, graph, schemas, mutation, code):
         graph["2"]["inputs"]["unknown"] = "secret text"
     errors = validate_live(load(tmp_path, graph), schemas)
     assert code in errors
-    assert all(error.startswith("schema_") and "secret" not in error and "一想到" not in error for error in errors)
+    assert all(error.startswith("schema_") and "secret" not in error and "example.wav" not in error for error in errors)
 
 
 def test_real_shaped_load_audio_combo_schema(tmp_path, graph, schemas):

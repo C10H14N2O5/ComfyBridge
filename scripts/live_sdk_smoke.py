@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 from pathlib import Path
 import socket
 import time
@@ -21,6 +22,13 @@ from comfybridge.launcher import ensure_backend, request_stop
 from comfybridge.workflows import import_template
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def live_comfy_url():
+    value = os.environ.get('COMFYBRIDGE_LIVE_COMFY_URL', '').strip()
+    if not value:
+        raise SystemExit('Set COMFYBRIDGE_LIVE_COMFY_URL to the ComfyUI base URL, e.g. http://127.0.0.1:8188')
+    return value.rstrip('/')
 
 
 def free_port():
@@ -63,11 +71,12 @@ def main():
     args = parser.parse_args()
     if not args.execute_authorized_live_test:
         parser.error('Explicit authorization flag required: this consumes GPU resources.')
+    comfy_url = live_comfy_url()
     output = ROOT / 'artifacts' / 'sdk-live'
     if output.exists():
         raise RuntimeError('Acceptance artifact directory exists; reconcile instead of rerunning.')
     # Read-only preflight. Do not join an already busy server for a voluntary test.
-    with httpx.Client(base_url='http://127.0.0.1:8188', timeout=5, trust_env=False) as remote:
+    with httpx.Client(base_url=comfy_url, timeout=5, trust_env=False) as remote:
         queue = remote.get('/queue').raise_for_status().json()
         if queue['queue_running'] or queue['queue_pending']:
             raise RuntimeError('ComfyUI busy; no acceptance requests submitted.')
@@ -79,7 +88,7 @@ def main():
     template, digest = import_template(data_dir, graph, 'index-tts-2.5', 'example', preset_id)
     config = AppConfig.model_validate({
         'server': {'listen_host': '127.0.0.1', 'listen_port': free_port(), 'api_key': 'local-acceptance-test-only'},
-        'comfyui': {'base_url': 'http://127.0.0.1:8188'},
+        'comfyui': {'base_url': comfy_url},
         'models': [{'id': 'index-tts-2.5', 'cache_policy': 'release'}],
         'presets': [{'id': preset_id, 'model': 'index-tts-2.5', 'voice': 'example', 'template': template,
                      'sha256': digest, 'text_binding': {'node_id': '2', 'field': 'text'}, 'audio_output_node': '4',

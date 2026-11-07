@@ -1,0 +1,8 @@
+# Normalize text to LF in the repository and working tree. Example workflow
+# templates are verified by SHA-256 of their exact bytes, so they must never be
+# converted to CRLF on checkout.
+* text=auto eol=lf
+*.json text eol=lf
+*.exe binary
+*.zip binary
+*.tar.gz binary

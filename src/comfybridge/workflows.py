@@ -22,7 +22,7 @@ class WorkflowError(ValueError):
     """A fixed diagnostic code, never an upstream message or user text."""
 
 
-# These maps describe the supplied IndexTTS 2.5 flat UI format, NOT object_info order.
+# These maps describe the example four-node IndexTTS 2.5 flat UI graph, NOT object_info order.
 _WIDGETS = {
     "LoadAudio": ("audio", "upload"),
     "IndexTTS25BaseNode": (

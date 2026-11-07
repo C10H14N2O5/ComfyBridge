@@ -131,6 +131,26 @@ async def test_auth_before_body_and_chunked_body_limit(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["bearer test-key", "BEARER test-key", "BeArEr test-key"])
+async def test_bearer_scheme_is_case_insensitive(tmp_path, value):
+    client, _ = client_for(tmp_path)
+    async with client:
+        response = await client.get("/v1/models", headers={"authorization": value})
+        assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["Bearer TEST-KEY", "Bearer test-key ", "Bearer  test-key", "test-key",
+                                   "Bearertest-key", "Basic test-key", "Bearer", ""])
+async def test_bearer_credential_still_exact(tmp_path, value):
+    client, _ = client_for(tmp_path)
+    async with client:
+        response = await client.get("/v1/models", headers={"authorization": value})
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "invalid_api_key"
+
+
+@pytest.mark.asyncio
 async def test_duplicate_authorization_and_content_type(tmp_path):
     client, _ = client_for(tmp_path)
     async with client:

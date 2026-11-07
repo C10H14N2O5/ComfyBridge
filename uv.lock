@@ -71,13 +71,12 @@ wheels = [
 
 [[package]]
 name = "comfybridge"
-version = "0.5.0"
+version = "0.5.1"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pydantic" },
-    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "rich" },
     { name = "uvicorn" },
 ]
@@ -88,6 +87,7 @@ dev = [
     { name = "pyinstaller" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "respx" },
 ]
 
@@ -96,7 +96,6 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "pydantic", specifier = ">=2.10,<3" },
-    { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=308" },
     { name = "rich", specifier = ">=13.9,<15" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
 ]
@@ -107,6 +106,7 @@ dev = [
     { name = "pyinstaller", specifier = ">=6.12,<7" },
     { name = "pytest", specifier = ">=8.3,<10" },
     { name = "pytest-asyncio", specifier = ">=0.25,<2" },
+    { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=308" },
     { name = "respx", specifier = ">=0.22,<1" },
 ]
 

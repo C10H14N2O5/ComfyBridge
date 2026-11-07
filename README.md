@@ -1,8 +1,53 @@
 # ComfyBridge
 
+简体中文 | [English](<README.en.md>)
+
 面向 Windows x86_64 的本地 OpenAI 兼容 TTS 中间层，将 `(model, voice)` 映射到 ComfyUI 工作流。支持 WAV／MP3、独立后台、控制台 Monitor 和配置向导。
 
-**当前为 0.5.0 离线安装版：只需下载一个 Setup EXE，安装和更新均在原文件夹完成。** 详见 [安装与更新](<docs/SETUP_040.md>)。定时缓存继续使用 [原有规则](<docs/CACHE_030.md>)。不包含模型权重、参考音频或正式 API Key，不修改 ComfyUI 安装和画布。
+**当前为 0.5.1 离线安装版：只需下载一个 Setup EXE，安装和更新均在原文件夹完成。** 详见 [安装与更新](<docs/SETUP_040.md>)。定时缓存继续使用 [原有规则](<docs/CACHE_030.md>)。不包含模型权重、参考音频或正式 API Key，不修改 ComfyUI 安装和画布。
+
+## 功能特性
+
+- OpenAI 兼容接口：`POST /v1/audio/speech` 与 `GET /v1/models`，使用 Bearer API Key 鉴权，可直接对接 AstrBot、OpenAI Python SDK 等客户端。
+- 按 `(model, voice)` 精确路由到 ComfyUI API 格式工作流；导入时通过菜单绑定文本注入字段、音频输出节点和缓存控制节点。
+- 输出 WAV 或 MP3，由随附的固定版本 FFmpeg／ffprobe 在本地转码。
+- 模型级缓存策略：跟随工作流、保持缓存、生成后不保留、定时丢弃（ComfyUI `/free` 或短生成卸载）。
+- 持久任务账本：提交前记账，提交结果不明时暂停并核对，不自动重放请求。
+- 有界队列、处理槽、请求体与文本长度限制、超时控制，日志只记录脱敏元数据。
+- 独立后台、实时 Monitor、双语（简体中文／English）配置向导和纵向编号主菜单，日常操作无需敲命令。
+- 单文件离线 Setup：原目录安装、更新、同版修复，更新前自动备份，失败时回滚程序文件。
+
+## 系统要求
+
+- **操作系统**：Windows 10／11 x64。
+- **ComfyUI**：已验证的原生目标版本为 v0.41.3（见 [架构说明](<ARCHITECTURE.md>)）；可以部署在本机，也可以部署在局域网内的其他机器。
+- **IndexTTS 2.5 工作流**：需在 ComfyUI 中安装节点包 [ComfyUI-Index-TTS](https://github.com/C10H14N2O5/ComfyUI-Index-TTS)。它提供 `IndexTTS25BaseNode`、`IndexTTS25CacheControlNode` 以及缓存控制所需的情感节点（`IndexTTS25EmotionTextNode` / `IndexTTS25EmotionAudioNode` / `IndexTTS25EmotionVectorNode`）。模型权重按节点包说明自行准备。
+- **使用 Setup**：无需安装 Python 或 PowerShell 7，无需联网。
+- **源码运行与构建**：Python 3.13、[uv](https://github.com/astral-sh/uv)；构建还需要 PowerShell 7（`pwsh`）。
+
+## 兼容性
+
+- 已测试的调用端：AstrBot（OpenAI TTS）和 OpenAI Python SDK。
+- 主要使用 IndexTTS 2.5 节点测试。其他包含文本输入和 AUDIO 输出的 ComfyUI API 格式工作流理论上可用，但尚未验证。
+
+## 已知限制
+
+- 仅支持 Windows x64。源码中存在 POSIX 代码路径，但未经测试，也不提供打包。
+- 源码使用时 Python 固定为 3.13。
+- `response_format` 仅支持 `wav` 和 `mp3`。
+- `speed` 只能省略或为 `1`，`instructions` 只能省略或为空。
+- 未知请求字段一律返回 400；因此部分会附带额外字段的客户端（例如 SillyTavern、Open WebUI、Home Assistant 的相关集成）可能被拒绝。
+- 不支持流式输出，不提供 `/v1/models/{id}`。
+- 原始 WebUI 格式工作流导入只支持示例四节点结构；其他工作流请导出 API 格式。
+- 缓存控制仅支持 IndexTTS 2.5 节点。
+- 明文 HTTP + 单一 API Key，仅适用于可信局域网，不提供 TLS；不要暴露到公网。
+- 单实例互斥限定在同一个 Windows 登录会话内。
+- EXE 未签名，首次运行可能出现 SmartScreen 警告；请核对下载来源和 SHA-256，不要关闭系统安全防护。
+
+## 负责任使用
+
+- 只克隆你拥有相应权利或已获得本人同意的声音，不得用于冒充、欺诈或侵犯他人权益。
+- 遵守所在地关于深度合成、AI 生成内容标识等方面的法律法规；需要时请对生成的语音进行显著标识。
 
 ## 快速开始
 
@@ -36,7 +81,7 @@
 
 3. **监听端口**：默认 `18388`；如被占用，改为其他空闲端口。
 
-4. **ComfyUI 地址**：填写部署 ComfyUI 的机器地址，需包含协议（`http://` 或 `https://`），端口按实际部署填写。本机部署填 `http://127.0.0.1:8188`，部署在其他机器则对应机器的 IP。向导会预填一个示例地址，请改成你的实际地址。
+4. **ComfyUI 地址**：填写部署 ComfyUI 的机器地址，需包含协议（`http://` 或 `https://`），端口按实际部署填写。向导会预填本机默认地址 `http://127.0.0.1:8188`；ComfyUI 运行在其他机器时，改为该机器的 IP 和端口。
 
 中间层不会自动修改 Windows 防火墙；从其他设备访问时，请自行放行监听端口。
 
@@ -44,7 +89,7 @@
 
 1. 向导提示 `现在添加第一个模型？也可稍后从主菜单添加。`，选择 `1`。也可以跳过；但没有有效音色前语音服务不会就绪。
 
-2. 输入模型 ID（Model ID）。它同时是 OpenAI 兼容接口中的 `model` 值，调用端必须填写同一个 ID。模型 ID 区分大小写，只能包含字母、数字和 `.`、`_`、`-`，须以字母或数字开头，最长 64 个字符，例如 `IndexTTS-2.5`。
+2. 输入模型 ID（Model ID）。它同时是 OpenAI 兼容接口中的 `model` 值，调用端必须填写同一个 ID。模型 ID 区分大小写，只能包含字母、数字和 `.`、`_`、`-`，须以字母或数字开头，最长 64 个字符，例如 `index-tts-2.5`。
 
 3. 选择缓存策略（之后可在主菜单 **6 → 修改模型或缓存策略** 中修改，重启后台后生效）：
 
@@ -66,9 +111,9 @@
 
 2. 选择上一步添加的模型编号。
 
-3. 输入音色 ID（Voice ID）。它同时是接口中的 `voice` 值，调用端必须填写同一个 ID；规则与模型 ID 相同，区分大小写，例如 `Example`。
+3. 输入音色 ID（Voice ID）。它同时是接口中的 `voice` 值，调用端必须填写同一个 ID；规则与模型 ID 相同，区分大小写，例如 `example`。
 
-4. 导入工作流 JSON：可以把文件拖入程序窗口，也可以输入或粘贴完整路径（带引号也可以）。程序只复制 JSON 到数据目录的 `workflows` 子目录，不上传参考音频、不复制模型文件，也不会执行生成；源文件之后的修改不会自动同步。工作流中引用的 **模型文件** 和 **参考音频** 必须已存在于 ComfyUI 机器，并能被相应节点访问。也可导入 [Example API 示例](<examples/workflows/index-tts-2.5_example.json>)；一般推荐在 ComfyUI 中导出 **API 格式** JSON，原始 WebUI 工作流只支持已知的 Example 风格四节点平铺结构，不支持子图、bypass 或虚拟节点。
+4. 导入工作流 JSON：可以把文件拖入程序窗口，也可以输入或粘贴完整路径（带引号也可以）。程序只复制 JSON 到数据目录的 `workflows` 子目录，不上传参考音频、不复制模型文件，也不会执行生成；源文件之后的修改不会自动同步。工作流中引用的 **模型文件** 和 **参考音频** 必须已存在于 ComfyUI 机器，并能被相应节点访问。也可导入 [API 示例](<examples/workflows/index-tts-2.5_example.json>)，它引用的参考音频文件名为 `example.wav`，请换成你有权使用的音频并放入 ComfyUI 的 `input` 目录（或在工作流中改成你自己的文件名）。一般推荐在 ComfyUI 中导出 **API 格式** JSON，原始 WebUI 工作流只支持已知的示例四节点（LoadAudio → IndexTTS25BaseNode + IndexTTS25CacheControlNode → SaveAudio）平铺结构，不支持子图、bypass 或虚拟节点。
 
 5. 依次完成以下绑定，核对预设摘要后确认应用：
 
@@ -90,8 +135,8 @@
 | 启用 | 完成配置后打开即可 |
 | API Key | 你在向导中设置的同一业务 Key |
 | API Base URL | `http://中间层实际IP:中间层实际端口/v1` |
-| 模型 ID | `IndexTTS-2.5` |
-| voice | `Example` |
+| 模型 ID | `index-tts-2.5` |
+| voice | `example` |
 | 超时时间 | 建议实测并设置为大于 模型加载耗时 + 推理 所需的时长 |
 
 **不要把 API Base 填成 ComfyUI 的 8188 端口！**
@@ -99,7 +144,7 @@
 ## 主菜单：输入编号后回车
 
 ```text
-ComfyBridge 0.5.0 — 功能选择
+ComfyBridge 0.5.1 — 功能选择
 ------------------------------------------------
 状态快照（空回车刷新，选项 1 查看实时状态）
 
@@ -191,7 +236,7 @@ ComfyBridge 0.5.0 — 功能选择
 
 - `POST /v1/audio/speech`：返回音频二进制，格式为 WAV 或 MP3，省略格式默认 MP3。
 - `GET /v1/models`：返回去重模型列表，离线时仍可使用。
-- 两者均要求 `Authorization: Bearer <Key>`。API Key 不提供传输加密，HTTP 仅用于可信局域网。
+- 两者均要求 `Authorization: Bearer <Key>`。`Bearer` 这一 scheme 不区分大小写（`bearer`、`BEARER` 均可），Key 本身精确比较、区分大小写。API Key 不提供传输加密，HTTP 仅用于可信局域网。
 - `model`／`voice` 精确区分大小写，音色不会通过模型列表自动分发。
 - 默认文本上限 4096 个 Unicode 码点，可配置；不自动分段、截断或改写。
 - `speed` 只接受省略或数值 `1.0`；这表示不在工作流预设基础上额外变速。
@@ -208,7 +253,7 @@ ComfyBridge 0.5.0 — 功能选择
 默认数据位于程序旁的 `data`，可通过 `--data-dir` 指定其他位置；不可写即报错，不偷偷换目录。配置是 UTF-8 JSON，示意见 [示例配置](<examples/config.example.json>)；其中 Key 特意留空，**不能直接作为有效生产配置启动**。
 
 - 模板导入复制到管理目录，源文件修改不自动同步；替换需重新确认绑定，重启生效。
-- API JSON 为标准输入；只对已知的四节点 Example 风格平铺 WebUI 图提供转换，不支持任意子图、bypass 或虚拟节点。
+- API JSON 为标准输入；只对已知的示例四节点平铺 WebUI 图提供转换，不支持任意子图、bypass 或虚拟节点。
 - 前端 `control_after_generate=randomize` 不属于 API 输入。业务生成保留模板固定种子，导入时会提示；定时短生成卸载单独使用不同 seed，避免内部卸载被执行缓存跳过。
 - 向导新增、修改、删除预设不执行生成；模型和参考音频仍由 ComfyUI 管理。
 - 每个预设的模板保存为 `workflows/preset-<预设ID>-<SHA-256>.json`，不要手动修改，否则哈希不符会拒绝加载。删除预设、删除模型（连同其预设）或替换模板后，在 **校验并保存** 成功时自动删除不再被引用的旧模板；不保存就退出时，只删除本次新导入且未被已保存配置使用的文件。
@@ -250,4 +295,25 @@ pwsh -File .\scripts\build.ps1
 
 构建会获取校验和固定的 FFmpeg／ffprobe，保留共享 DLL、许可和源码来源，先生成并测试完整程序目录，再封装离线单文件 Setup，通过安装器烟测后才发布 EXE。程序未签名；SHA-256 只能检查完整性，不能替代可信下载来源或代码签名。外网部署、Windows 服务、多用户并发更新和通用工作流编辑器不在当前范围。
 
-详细实现契约见 [架构说明](<ARCHITECTURE.md>)，需求讨论见 [需求记录](<todo.md>)，第三方分发事项见 [第三方说明](<docs/THIRD_PARTY.md>)。
+详细实现契约见 [架构说明](<ARCHITECTURE.md>)，版本变化见 [更新日志](<CHANGELOG.md>)，第三方分发事项见 [第三方说明](<docs/THIRD_PARTY.md>)。
+
+## 路线图
+
+以下方向尚未排期，也不构成承诺：
+
+- Linux 支持与 Docker 镜像。
+- 支持 Python 3.14。
+- 可选的宽松请求模式（忽略未知字段），以兼容更多客户端。
+- 更多输出格式：opus、aac、flac、pcm。
+- 将 `speed` 映射到工作流的 `duration_factor`。
+- 流式输出。
+- `GET /v1/models/{id}`。
+- EXE 代码签名。
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request。开发环境、提交规范和测试要求见 [贡献指南](<CONTRIBUTING.md>)。安全问题请勿公开提交 Issue，按 [安全策略](<SECURITY.md>) 私下报告。
+
+## 许可证
+
+本项目以 MIT 许可证发布，详见 [LICENSE](<LICENSE>)。随发行包分发的第三方组件（FFmpeg、Python 运行时及依赖等）遵循各自的许可证，见 [第三方说明](<docs/THIRD_PARTY.md>)。

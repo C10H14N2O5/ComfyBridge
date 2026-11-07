@@ -1,20 +1,28 @@
-"""Bounded, opt-in live Example experiment. Never retries POST or interrupts ComfyUI."""
+"""Bounded, opt-in live example experiment. Never retries POST or interrupts ComfyUI."""
 from __future__ import annotations
 import argparse
 import json
+import os
 import time
 import uuid
 from pathlib import Path
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE = 'http://127.0.0.1:8188'
+BASE = ''  # resolved from COMFYBRIDGE_LIVE_COMFY_URL only before live use
 CASES = {
     'baseline': ('你好，这是语音桥接服务的第一次测试。', False),
     'cached-first': ('现在测试模型缓存，保持自然清晰的声音。', True),
     'cached-second': ('这是下一次缓存测试，祝你今天心情愉快。', True),
     'release': ('语音测试即将结束，感谢你的耐心等待。', False),
 }
+
+
+def live_comfy_url():
+    value = os.environ.get('COMFYBRIDGE_LIVE_COMFY_URL', '').strip()
+    if not value:
+        raise SystemExit('Set COMFYBRIDGE_LIVE_COMFY_URL to the ComfyUI base URL, e.g. http://127.0.0.1:8188')
+    return value.rstrip('/')
 
 
 def fetch(path, payload=None, timeout=5):
@@ -132,11 +140,13 @@ def run(case):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=['prepare', *CASES])
-    parser.add_argument('--source', type=Path, help='Read-only exported Example UI JSON for prepare')
+    parser.add_argument('--source', type=Path, help='Read-only exported example UI JSON for prepare')
     args = parser.parse_args()
     if args.action == 'prepare':
         if args.source is None:
             parser.error('prepare requires --source; generation requires explicit human authorization')
+        BASE = live_comfy_url()
         prepare(args.source)
     else:
+        BASE = live_comfy_url()
         raise SystemExit(run(args.action))
