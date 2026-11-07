@@ -13,6 +13,7 @@
 - 示例工作流改名为 `examples/workflows/index-tts-2.5_example.json`，示例音色 ID 改为 `example`，参考音频文件名改为 `example.wav`。
 - `pywin32` 移到开发依赖。
 - 版本号统一来自 `comfybridge.__version__`，构建脚本从同一处读取。
+- 上游 BtbN 已清理固定的 FFmpeg autobuild 发布；`fetch_ffmpeg.ps1` 改为上游下载失败时使用本仓库 `vendor-ffmpeg-n8.1.3` 发布中的同一压缩包，并按原 SHA-256 校验。
 - 新增 MIT `LICENSE`、英文 README、贡献指南、安全策略、Issue／PR 模板和 GitHub CI；移除仓库中的内部需求记录文件。
 
 ### 保持不变

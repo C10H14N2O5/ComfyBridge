@@ -5,12 +5,28 @@ Set-StrictMode -Version Latest
 $tag = 'autobuild-2026-10-22-13-06'
 $name = 'ffmpeg-n8.1.3-23-g5c4f5744cd-win64-lgpl-shared-8.1.zip'
 $expected = 'c41df73a3f3259e81d5d53e6ce0c4c80b4841a30894fb77954650e445daa6c53'
-$url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/$tag/$name"
+# BtbN prunes old autobuild releases, so the identical archive is mirrored as a
+# ComfyBridge release asset. Both sources are verified against the same SHA-256.
+$urls = @(
+    "https://github.com/BtbN/FFmpeg-Builds/releases/download/$tag/$name",
+    "https://github.com/C10H14N2O5/ComfyBridge/releases/download/vendor-ffmpeg-n8.1.3/$name"
+)
 $null = New-Item -ItemType Directory -Force -Path $Destination
 $root = (Resolve-Path -LiteralPath $Destination).Path
 $archive = Join-Path $root $name
 if (-not (Test-Path -LiteralPath $archive)) {
-    Invoke-WebRequest -Uri $url -OutFile $archive
+    $partial = "$archive.partial"
+    foreach ($url in $urls) {
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $partial
+            Move-Item -LiteralPath $partial -Destination $archive
+            break
+        } catch {
+            Write-Warning "Download failed from ${url}: $($_.Exception.Message)"
+            Remove-Item -LiteralPath $partial -ErrorAction SilentlyContinue
+        }
+    }
+    if (-not (Test-Path -LiteralPath $archive)) { throw 'Pinned FFmpeg archive is unavailable from all sources.' }
 }
 $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actual -ne $expected) { throw "Archive checksum mismatch. Inspect and remove invalid archive manually: $archive" }

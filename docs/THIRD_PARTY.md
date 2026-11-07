@@ -12,6 +12,7 @@ ComfyBridge 本身以 MIT 许可证发布，见 [LICENSE](<../LICENSE>)。下列
 - SHA-256：`c41df73a3f3259e81d5d53e6ce0c4c80b4841a30894fb77954650e445daa6c53`。
 - FFmpeg 源码提交：[5c4f5744cd60943125a78db692b728210102f255](https://github.com/FFmpeg/FFmpeg/tree/5c4f5744cd60943125a78db692b728210102f255)。
 - 构建配方提交：[937868360a21d711ec94a33f5591d345ad9b7754](https://github.com/BtbN/FFmpeg-Builds/tree/937868360a21d711ec94a33f5591d345ad9b7754)。
+- 镜像：BtbN 会定期清理旧的 autobuild 发布，因此同一个未改动的压缩包及对应源码归档另存于本仓库的 [`vendor-ffmpeg-n8.1.3` 发布](https://github.com/C10H14N2O5/ComfyBridge/releases/tag/vendor-ffmpeg-n8.1.3)。获取脚本先尝试上游，再尝试镜像，两者都按同一 SHA-256 校验。
 
 下载与校验规则见 [组件清单](<../scripts/ffmpeg-manifest.json>) 和 [获取脚本](<../scripts/fetch_ffmpeg.ps1>)。已在本机核实该构建未开启 `--enable-gpl`，开启 `--enable-version3`，包含 `libmp3lame` 与 PCM16 编码器，原包许可文本为 LGPL v3。
 
